@@ -1,0 +1,419 @@
+{
+	"info": {
+		"_postman_id": "8b2d4e5f-1a2b-3c4d-5e6f-7g8h9i0j1k2l",
+		"name": "Medical Logbook v2 - Student Testing Flow",
+		"description": "Comprehensive testing flow for the Student role in Medical Logbook v2.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "1. Login (Student)",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var jsonData = pm.response.json();",
+							"if (pm.response.code === 200 && jsonData.success && jsonData.data.token) {",
+							"    pm.collectionVariables.set(\"bearer_token\", jsonData.data.token);",
+							"    pm.test(\"Login successful and token saved\", function () {",
+							"        pm.expect(jsonData.data.token).to.be.a('string');",
+							"    });",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"email\": \"{{student_email}}\",\n    \"password\": \"{{student_password}}\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/auth/login",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"auth",
+						"login"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "2. Get Student Dashboard",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/dashboard/student",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"dashboard",
+						"student"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "3. Get Locations",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var jsonData = pm.response.json();",
+							"if (pm.response.code === 200 && jsonData.success && jsonData.data.length > 0) {",
+							"    var loc = jsonData.data[0];",
+							"    pm.collectionVariables.set(\"location_id\", loc._id);",
+							"    pm.collectionVariables.set(\"location_lat\", loc.latitude);",
+							"    pm.collectionVariables.set(\"location_lng\", loc.longitude);",
+							"    pm.test(\"Location found and variables set\", function () {",
+							"        pm.expect(loc._id).to.exist;",
+							"    });",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/locations",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"locations"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "4. Check-In to Shift",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"location_id\": \"{{location_id}}\",\n    \"latitude\": {{location_lat}},\n    \"longitude\": {{location_lng}}\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/shifts/check-in",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"shifts",
+						"check-in"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "5. Get My Shifts (History)",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/shifts/my",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"shifts",
+						"my"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "6. Create Logbook Case",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"procedure_id\": \"{{procedure_id}}\",\n    \"preceptor_id\": \"{{preceptor_id}}\",\n    \"case_data\": {\n        \"patient_initials\": \"AS\",\n        \"diagnosis\": \"Acute Appendicitis\",\n        \"notes\": \"Observed laparoscopic appendectomy.\"\n    },\n    \"case_date\": \"{{$isoTimestamp}}\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/logbook-cases",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"logbook-cases"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "7. Get My Logbook Cases",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/logbook-cases/my",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"logbook-cases",
+						"my"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "8. Get Unread Notifications Count",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/notifications/unread-count",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"notifications",
+						"unread-count"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "9. Get My Notifications",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var jsonData = pm.response.json();",
+							"if (pm.response.code === 200 && jsonData.success && jsonData.data.length > 0) {",
+							"    pm.collectionVariables.set(\"notification_id\", jsonData.data[0]._id);",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/notifications/my",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"notifications",
+						"my"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "10. Mark Notification as Read",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "PUT",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/notifications/{{notification_id}}/read",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"notifications",
+						"{{notification_id}}",
+						"read"
+					]
+				}
+			},
+			"response": []
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:5000",
+			"type": "string"
+		},
+		{
+			"key": "student_email",
+			"value": "student@test.com",
+			"type": "string"
+		},
+		{
+			"key": "student_password",
+			"value": "password123",
+			"type": "string"
+		},
+		{
+			"key": "bearer_token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "location_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "location_lat",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "location_lng",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "procedure_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "preceptor_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "notification_id",
+			"value": "",
+			"type": "string"
+		}
+	]
+}

@@ -1,0 +1,347 @@
+{
+	"info": {
+		"_postman_id": "9c3d5f6a-2b3c-4d5e-6f7g-8h9i0j1k2l3m",
+		"name": "Medical Logbook v2 - Preceptor Testing Flow",
+		"description": "Comprehensive testing flow for the Preceptor role in Medical Logbook v2.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "1. Login (Preceptor)",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var jsonData = pm.response.json();",
+							"if (pm.response.code === 200 && jsonData.success && jsonData.data.token) {",
+							"    pm.collectionVariables.set(\"bearer_token_preceptor\", jsonData.data.token);",
+							"    pm.test(\"Login successful and token saved\", function () {",
+							"        pm.expect(jsonData.data.token).to.be.a('string');",
+							"    });",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"email\": \"{{preceptor_email}}\",\n    \"password\": \"{{preceptor_password}}\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/auth/login",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"auth",
+						"login"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "2. Get Preceptor Dashboard",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token_preceptor}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/dashboard/preceptor",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"dashboard",
+						"preceptor"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "3. Verify Student Shift",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token_preceptor}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "PUT",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"verify_status\": \"verified\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/shifts/{{shift_id}}/verify",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"shifts",
+						"{{shift_id}}",
+						"verify"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "4. Get Pending Logbook Cases",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var jsonData = pm.response.json();",
+							"if (pm.response.code === 200 && jsonData.success && jsonData.data.length > 0) {",
+							"    pm.collectionVariables.set(\"case_id\", jsonData.data[0]._id);",
+							"    pm.test(\"Found pending case and saved case_id\", function () {",
+							"        pm.expect(jsonData.data[0]._id).to.exist;",
+							"    });",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token_preceptor}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/logbook-cases/pending",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"logbook-cases",
+						"pending"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "5. Evaluate Logbook Case (Approve)",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token_preceptor}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "PUT",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"evaluation_status\": \"approved\",\n    \"evaluation_result\": 4,\n    \"feedback\": \"Excellent work on this procedure.\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/logbook-cases/{{case_id}}/evaluate",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"logbook-cases",
+						"{{case_id}}",
+						"evaluate"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "6. Get Unread Notifications Count",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token_preceptor}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/notifications/unread-count",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"notifications",
+						"unread-count"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "7. Get My Notifications",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var jsonData = pm.response.json();",
+							"if (pm.response.code === 200 && jsonData.success && jsonData.data.length > 0) {",
+							"    pm.collectionVariables.set(\"notification_id_preceptor\", jsonData.data[0]._id);",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token_preceptor}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/notifications/my",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"notifications",
+						"my"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "8. Mark Notification as Read",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearer_token_preceptor}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "PUT",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/notifications/{{notification_id_preceptor}}/read",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"notifications",
+						"{{notification_id_preceptor}}",
+						"read"
+					]
+				}
+			},
+			"response": []
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:5000",
+			"type": "string"
+		},
+		{
+			"key": "preceptor_email",
+			"value": "preceptor@test.com",
+			"type": "string"
+		},
+		{
+			"key": "preceptor_password",
+			"value": "password123",
+			"type": "string"
+		},
+		{
+			"key": "bearer_token_preceptor",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "shift_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "case_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "notification_id_preceptor",
+			"value": "",
+			"type": "string"
+		}
+	]
+}
