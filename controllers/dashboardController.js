@@ -581,8 +581,11 @@ exports.getStudentProgress = async (req, res) => {
     const studentIds = students.map(s => s._id);
 
     // 2. Fetch all required data in parallel
-    const [allApprovedCases, allShifts, allProcedures] = await Promise.all([
-      LogbookCase.find({ student_id: { $in: studentIds }, evaluation_status: 'approved' }).lean(),
+    const [allEvaluatedCases, allShifts, allProcedures] = await Promise.all([
+      LogbookCase.find({ 
+        student_id: { $in: studentIds }, 
+        evaluation_status: { $in: ['approved', 'rejected'] } 
+      }).lean(),
       Shift.find({ student_id: { $in: studentIds } }).lean(),
       Procedure.find().lean()
     ]);
@@ -592,7 +595,7 @@ exports.getStudentProgress = async (req, res) => {
       const studentId = student._id.toString();
       
       // Filter data for this student
-      const studentCases = allApprovedCases.filter(c => c.student_id.toString() === studentId);
+      const studentCases = allEvaluatedCases.filter(c => c.student_id.toString() === studentId);
       const studentShifts = allShifts.filter(s => s.student_id.toString() === studentId);
 
       // C. Evaluation & Procedures
@@ -603,28 +606,38 @@ exports.getStudentProgress = async (req, res) => {
       
       let cappedCompletedCases = 0;
       let totalRequiredCases = 0;
+      let completedProceduresCount = 0;
+      
+      const approvedCases = studentCases.filter(c => c.evaluation_status === 'approved');
+      const totalEvaluatedCount = studentCases.length;
+      
+      // Passing rate logic: (Approved with score > 0) / (Total Evaluated)
+      const approvedWithScore = approvedCases.filter(c => (c.evaluation_result || 0) > 0).length;
+      const evaluationPct = totalEvaluatedCount > 0 ? Math.round((approvedWithScore / totalEvaluatedCount) * 100) : 0;
 
       studentProcedures.forEach(proc => {
         const pid = proc._id.toString();
         const target = proc.required_cases || proc.target_score || 1;
-        const approvedForThisProc = studentCases.filter(c => c.procedure_id.toString() === pid).length;
+        const approvedForThisProc = approvedCases.filter(c => c.procedure_id.toString() === pid).length;
         
         totalRequiredCases += target;
         cappedCompletedCases += Math.min(approvedForThisProc, target);
+
+        if (approvedForThisProc >= target) {
+          completedProceduresCount++;
+        }
       });
 
-      // A. Completed Cases Count (Raw total for info, but we'll use capped for the requested 3/5 logic)
-      const rawCompletedCasesCount = studentCases.length;
+      // A. Completed Cases Count
+      const rawCompletedCasesCount = approvedCases.length;
 
       // B. Attendance Percentage
       const totalShifts = studentShifts.length;
       const verifiedShifts = studentShifts.filter(s => s.verify_status === 'verified').length;
       const attendancePct = totalShifts > 0 ? Math.round((verifiedShifts / totalShifts) * 100) : 0;
 
-      const evaluationPct = totalRequiredCases > 0 ? Math.min(Math.round((cappedCompletedCases / totalRequiredCases) * 100), 100) : 0;
-
       // D. Average Score Percentage
-      const totalScore = studentCases.reduce((sum, c) => sum + (c.evaluation_result || 0), 0);
+      const totalScore = approvedCases.reduce((sum, c) => sum + (c.evaluation_result || 0), 0);
       const avgScoreRaw = rawCompletedCasesCount > 0 ? (totalScore / rawCompletedCasesCount) : 0;
       const avgScorePct = Math.round((avgScoreRaw / 4) * 100);
 

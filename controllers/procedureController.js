@@ -187,7 +187,17 @@ exports.updateProcedure = async (req, res) => {
       form_structure,
     } = req.body || {};
 
-    if (course_id !== undefined) {
+    if (course_id !== undefined && String(course_id) !== String(procedure.course_id)) {
+      const LogbookCase = mongoose.model('LogbookCase');
+      const hasCases = await LogbookCase.exists({ procedure_id: id });
+
+      if (hasCases) {
+        return res.status(400).json({
+          success: false,
+          message: 'ไม่สามารถเปลี่ยนรายวิชาของหัตถการนี้ได้ เนื่องจากมีนักศึกษาเริ่มบันทึกเคสแล้ว'
+        });
+      }
+
       if (!mongoose.Types.ObjectId.isValid(course_id)) {
         return res.status(400).json({
           success: false,
@@ -280,6 +290,17 @@ exports.deleteProcedure = async (req, res) => {
         success: false,
         data: null,
         message: 'Invalid procedure id.',
+      });
+    }
+
+    // Dependency Check: Prevent deleting procedure if linked to cases
+    const LogbookCase = mongoose.model('LogbookCase');
+    const hasCases = await LogbookCase.exists({ procedure_id: id });
+
+    if (hasCases) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่สามารถลบหัตถการนี้ได้ เนื่องจากมีนักศึกษาบันทึกเคสโดยใช้หัตถการนี้แล้ว'
       });
     }
 

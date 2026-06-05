@@ -316,7 +316,19 @@ exports.updateCourse = async (req, res) => {
       });
     }
 
-    if (course_code !== undefined) {
+    if (course_code !== undefined && course_code !== course.course_code) {
+      const [hasStudents, hasProcedures] = await Promise.all([
+        User.exists({ enrolled_courses: id }),
+        Procedure.exists({ course_id: id })
+      ]);
+      
+      if (hasStudents || hasProcedures) {
+        return res.status(400).json({
+          success: false,
+          message: 'ไม่สามารถแก้ไขรหัสวิชาได้เนื่องจากมีข้อมูลนักศึกษาหรือหัตถการผูกอยู่ (แนะนำให้สร้างวิชาใหม่แทน)'
+        });
+      }
+
       const duplicate = await Course.findOne({
         course_code: course_code.trim(),
         semester: semester !== undefined ? semester : course.semester,
@@ -333,8 +345,16 @@ exports.updateCourse = async (req, res) => {
       course.course_code = course_code;
     }
 
-    if (course_name !== undefined) course.course_name = course_name;
-    if (semester !== undefined) course.semester = semester;
+    if (semester !== undefined && semester !== course.semester) {
+       const hasData = await User.exists({ enrolled_courses: id });
+       if (hasData) {
+         return res.status(400).json({
+           success: false,
+           message: 'ไม่สามารถแก้ไขเทอมของวิชาได้เนื่องจากมีนักศึกษาลงทะเบียนอยู่'
+         });
+       }
+       course.semester = semester;
+    }
     if (year !== undefined) course.year = year;
     if (evaluation_type !== undefined) course.evaluation_type = evaluation_type;
     if (is_archived !== undefined) course.is_archived = is_archived;
@@ -410,6 +430,19 @@ exports.deleteCourse = async (req, res) => {
       });
     }
 
+    // Dependency Check: Prevent deleting course if linked to data
+    const [hasStudents, hasProcedures] = await Promise.all([
+      User.exists({ enrolled_courses: id }),
+      Procedure.exists({ course_id: id })
+    ]);
+
+    if (hasStudents || hasProcedures) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่สามารถลบรายวิชานี้ได้ เนื่องจากมีนักศึกษาลงทะเบียนเรียนอยู่ หรือมีหัตถการผูกกับวิชานี้ กรุณาย้ายหรือลบข้อมูลที่เกี่ยวข้องก่อน'
+      });
+    }
+
     const deleted = await Course.findByIdAndDelete(id);
     if (!deleted) {
       return res.status(404).json({
@@ -418,11 +451,6 @@ exports.deleteCourse = async (req, res) => {
         message: 'Course not found.',
       });
     }
-
-    await User.updateMany(
-      { enrolled_courses: deleted._id },
-      { $pull: { enrolled_courses: deleted._id } }
-    );
 
     return res.status(200).json({
       success: true,

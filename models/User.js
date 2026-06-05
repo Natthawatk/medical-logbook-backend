@@ -14,9 +14,14 @@ const userSchema = new Schema(
     },
     password: {
       type: String,
-      // Password is required for non-Google auth; controllers can relax this when using OAuth-only flows.
-      required: true,
-      select: false, // Exclude by default from query results
+      // Password is optional for Google Auth users
+      required: false,
+      select: false,
+    },
+    google_id: {
+      type: String,
+      unique: true,
+      sparse: true, // Only for users who have linked Google account
     },
     role: {
       type: String,
@@ -44,9 +49,7 @@ const userSchema = new Schema(
     workplace: {
       type: Schema.Types.ObjectId,
       ref: 'Location',
-      required: function () {
-        return this.role === 'preceptor';
-      },
+      required: false,
     },
     year: {
       type: Number, // Academic year

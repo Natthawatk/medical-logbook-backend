@@ -179,7 +179,21 @@ exports.updateLocation = async (req, res) => {
       location.Location_name = Location_name;
     }
 
-    if (semester !== undefined) location.semester = semester;
+    if (semester !== undefined && semester !== location.semester) {
+      const Shift = mongoose.model('Shift');
+      const [hasPreceptors, hasShifts] = await Promise.all([
+        User.exists({ workplace: id }),
+        Shift.exists({ location_id: id })
+      ]);
+
+      if (hasPreceptors || hasShifts) {
+        return res.status(400).json({
+          success: false,
+          message: 'ไม่สามารถแก้ไขเทอมของสถานที่ได้ เนื่องจากมีการมอบหมายอาจารย์หรือมีประวัติการลงเวลาแล้ว'
+        });
+      }
+      location.semester = semester;
+    }
     if (Location_image !== undefined) location.Location_image = Location_image;
     if (latitude !== undefined) location.latitude = latitude;
     if (longitude !== undefined) location.longitude = longitude;
@@ -226,6 +240,20 @@ exports.deleteLocation = async (req, res) => {
         success: false,
         data: null,
         message: 'Invalid location id.',
+      });
+    }
+
+    // Dependency Check: Prevent deleting location if linked to data
+    const Shift = mongoose.model('Shift');
+    const [hasPreceptors, hasShifts] = await Promise.all([
+      User.exists({ workplace: id }),
+      Shift.exists({ location_id: id })
+    ]);
+
+    if (hasPreceptors || hasShifts) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่สามารถลบสถานที่นี้ได้ เนื่องจากมีอาจารย์พี่เลี้ยงสังกัดอยู่ หรือมีบันทึกประวัติการลงเวลาของนักศึกษา กรุณาย้ายข้อมูลที่เกี่ยวข้องก่อนทำการลบ'
       });
     }
 

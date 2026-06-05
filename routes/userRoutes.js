@@ -6,6 +6,8 @@ const {
 } = require('../middlewares/authMiddleware');
 
 const userController = require('../controllers/userController');
+const multer = require('multer');
+const upload = multer({ dest: 'uploads/' });
 
 const router = express.Router();
 
@@ -15,6 +17,7 @@ router.get('/preceptors', protect, userController.getPreceptors);
 router.get('/preceptors-by-location', protect, authorize('student'), userController.getPreceptorsByLocation);
 router.post('/', protect, authorize('admin'), userController.createUser);
 router.post('/bulk', protect, authorize('admin'), userController.createUsersBulk);
+router.post('/import-csv', protect, authorize('admin'), upload.single('file'), userController.importUsersCSV);
 router.get('/', protect, authorize('admin'), userController.getUsers);
 router.get('/:id', protect, authorize('admin'), userController.getUserById);
 router.put('/:id', protect, authorize('admin'), userController.updateUser);
