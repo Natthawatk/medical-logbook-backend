@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const compression = require('compression');
 
 const app = express();
 
@@ -20,6 +21,7 @@ const otpRoutes = require('./routes/otpRoutes');
 
 // Middleware
 app.use(cors());
+app.use(compression());
 app.use(express.json());
 
 // MongoDB Connection
@@ -29,6 +31,7 @@ mongoose
   .connect(mongoUri, {
     useNewUrlParser: true,
     useUnifiedTopology: true,
+    maxPoolSize: 10,
   })
   .then(() => {
     // eslint-disable-next-line no-console

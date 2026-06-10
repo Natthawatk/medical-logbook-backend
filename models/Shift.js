@@ -32,7 +32,7 @@ const shiftSchema = new Schema(
     },
     shift_status: {
       type: String,
-      enum: ['checked_in', 'checked_out', 'normal', 'late', 'absent', 'leave'],
+      enum: ['normal', 'late', 'absent', 'leave'], // Currently using normal and late
       required: true,
     },
     verify_status: {

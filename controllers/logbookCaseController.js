@@ -132,15 +132,28 @@ exports.createCase = async (req, res) => {
 
 exports.getMyCases = async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const total = await LogbookCase.countDocuments({ student_id: req.user.id });
     const cases = await LogbookCase.find({ student_id: req.user.id })
       .populate('procedure_id')
       .populate('preceptor_id', 'firstname_lastname email')
       .populate('location_id', 'Location_name')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     return res.status(200).json({
       success: true,
       data: cases,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
       message: 'ดึงข้อมูลเคสของคุณสำเร็จ',
     });
   } catch (err) {
@@ -156,18 +169,33 @@ exports.getMyCases = async (req, res) => {
 
 exports.getPendingCases = async (req, res) => {
   try {
-    const cases = await LogbookCase.find({
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const query = {
       preceptor_id: req.user.id,
       evaluation_status: 'pending',
-    })
+    };
+
+    const total = await LogbookCase.countDocuments(query);
+    const cases = await LogbookCase.find(query)
       .populate('student_id', 'firstname_lastname email student_id')
       .populate('procedure_id')
       .populate('location_id', 'Location_name')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     return res.status(200).json({
       success: true,
       data: cases,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
       message: 'ดึงข้อมูลเคสที่รอการประเมินสำเร็จ',
     });
   } catch (err) {
@@ -183,37 +211,54 @@ exports.getPendingCases = async (req, res) => {
 
 exports.getCasesForPreceptor = async (req, res) => {
   try {
-    const cases = await LogbookCase.find({ preceptor_id: req.user.id })
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const query = { preceptor_id: req.user.id };
+
+    const total = await LogbookCase.countDocuments(query);
+    const cases = await LogbookCase.find(query)
       .populate('student_id', 'firstname_lastname profile_image year')
       .populate('procedure_id', 'procedure_name required_cases target_score')
       .populate('location_id', 'Location_name')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
-    const casesWithProgress = await Promise.all(cases.map(async (c) => {
-      if (!c.student_id || !c.procedure_id) {
+    const casesWithProgress = await Promise.all(
+      cases.map(async (c) => {
+        if (!c.student_id || !c.procedure_id) {
+          return {
+            ...c.toObject(),
+            progress: '0/1',
+          };
+        }
+
+        const recordedCount = await LogbookCase.countDocuments({
+          student_id: c.student_id._id,
+          procedure_id: c.procedure_id._id,
+          evaluation_status: { $in: ['approved', 'pending'] },
+        });
+
+        const target = c.procedure_id.required_cases || c.procedure_id.target_score || 1;
+
         return {
           ...c.toObject(),
-          progress: '0/1'
+          progress: `${recordedCount}/${target}`,
         };
-      }
-
-      const recordedCount = await LogbookCase.countDocuments({
-        student_id: c.student_id._id,
-        procedure_id: c.procedure_id._id,
-        evaluation_status: { $in: ['approved', 'pending'] },
-      });
-
-      const target = c.procedure_id.required_cases || c.procedure_id.target_score || 1;
-
-      return {
-        ...c.toObject(),
-        progress: `${recordedCount}/${target}`
-      };
-    }));
+      })
+    );
 
     return res.status(200).json({
       success: true,
       data: casesWithProgress,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
       message: 'ดึงข้อมูลเคสทั้งหมดสำเร็จ',
     });
   } catch (err) {
@@ -409,6 +454,11 @@ exports.evaluateCase = async (req, res) => {
 
 exports.getAllCases = async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const total = await LogbookCase.countDocuments();
     const cases = await LogbookCase.find()
       .populate('student_id', 'firstname_lastname email student_id')
       .populate('preceptor_id', 'firstname_lastname email workplace')
@@ -417,11 +467,19 @@ exports.getAllCases = async (req, res) => {
         path: 'procedure_id',
         populate: { path: 'course_id', model: 'Course' },
       })
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     return res.status(200).json({
       success: true,
       data: cases,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
       message: 'ดึงข้อมูลเคสทั้งหมดสำเร็จ',
     });
   } catch (err) {
