@@ -116,14 +116,28 @@ exports.checkIn = async (req, res) => {
 
 exports.getMyShifts = async (req, res) => {
   try {
-    const shifts = await Shift.find({ student_id: req.user.id })
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const query = { student_id: req.user.id };
+    const total = await Shift.countDocuments(query);
+    const shifts = await Shift.find(query)
       .populate('location_id')
       .populate('preceptor_id', 'firstname_lastname email')
-      .sort({ shift_date: -1, createdAt: -1 });
+      .sort({ shift_date: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     return res.status(200).json({
       success: true,
       data: shifts,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
       message: 'ดึงข้อมูลประวัติการเข้าเวรสำเร็จ',
     });
   } catch (err) {
@@ -139,14 +153,28 @@ exports.getMyShifts = async (req, res) => {
 
 exports.getPreceptorShifts = async (req, res) => {
   try {
-    const shifts = await Shift.find({ preceptor_id: req.user.id })
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const query = { preceptor_id: req.user.id };
+    const total = await Shift.countDocuments(query);
+    const shifts = await Shift.find(query)
       .populate('student_id', 'firstname_lastname profile_image student_id year')
       .populate('location_id', 'Location_name')
-      .sort({ shift_date: -1, createdAt: -1 });
+      .sort({ shift_date: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     return res.status(200).json({
       success: true,
       data: shifts,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
       message: 'ดึงข้อมูลการเข้าเวรของนิสิตสำเร็จ',
     });
   } catch (err) {
