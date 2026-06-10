@@ -10,12 +10,15 @@ const getTransporter = () => {
 
   return nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 465,
-    secure: true, // Use SSL
+    port: 587,
+    secure: false, // Use STARTTLS
     auth: {
       user: process.env.MAIL_USER,
       pass: process.env.MAIL_APP_PASSWORD,
     },
+    tls: {
+      rejectUnauthorized: false // Often needed for cloud environments
+    }
   });
 };
 
