@@ -9,7 +9,8 @@ const getTransporter = () => {
   }
 
   return nodemailer.createTransport({
-    host: 'smtp.gmail.com',
+    // Using direct IPv4 address for smtp.gmail.com to bypass Render IPv6 issues
+    host: '142.251.12.109', 
     port: 587,
     secure: false, // Use STARTTLS
     auth: {
@@ -17,10 +18,9 @@ const getTransporter = () => {
       pass: process.env.MAIL_APP_PASSWORD,
     },
     tls: {
-      rejectUnauthorized: false // Often needed for cloud environments
-    },
-    // Force IPv4 to avoid ENETUNREACH issues on cloud providers like Render
-    family: 4
+      rejectUnauthorized: false,
+      servername: 'smtp.gmail.com' // Crucial when using IP address as host
+    }
   });
 };
 
