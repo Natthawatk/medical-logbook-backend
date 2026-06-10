@@ -11,16 +11,19 @@ const getTransporter = () => {
   return nodemailer.createTransport({
     // Using direct IPv4 address for smtp.gmail.com to bypass Render IPv6 issues
     host: '142.251.12.109', 
-    port: 587,
-    secure: false, // Use STARTTLS
+    port: 465,
+    secure: true, // Use SSL/TLS
     auth: {
       user: process.env.MAIL_USER,
       pass: process.env.MAIL_APP_PASSWORD,
     },
     tls: {
       rejectUnauthorized: false,
-      servername: 'smtp.gmail.com' // Crucial when using IP address as host
-    }
+      servername: 'smtp.gmail.com'
+    },
+    connectionTimeout: 20000, // 20 seconds
+    greetingTimeout: 20000,
+    socketTimeout: 20000
   });
 };
 
