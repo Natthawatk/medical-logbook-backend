@@ -1,29 +1,57 @@
-const { Resend } = require('resend');
+const { google } = require('googleapis');
+const nodemailer = require('nodemailer');
 
-// Initialize Resend with API Key from environment variables
-const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
-
+/**
+ * Send email using Gmail API with OAuth2
+ * This method is reliable on cloud providers like Render because it uses HTTP/HTTPS instead of SMTP ports.
+ */
 exports.sendEmail = async (to, subject, text, html) => {
-  if (!resend) {
-    throw new Error('Mailer not configured: Missing RESEND_API_KEY');
+  const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+  const CLIENT_SECRET = process.env.GMAIL_CLIENT_SECRET;
+  const REFRESH_TOKEN = process.env.GMAIL_REFRESH_TOKEN;
+  const MAIL_USER = process.env.MAIL_USER; // The Gmail address used for OAuth
+
+  if (!CLIENT_ID || !CLIENT_SECRET || !REFRESH_TOKEN || !MAIL_USER) {
+    throw new Error('Gmail API not fully configured. Missing GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN, or MAIL_USER');
   }
 
+  const oAuth2Client = new google.auth.OAuth2(
+    CLIENT_ID,
+    CLIENT_SECRET,
+    'https://developers.google.com/oauthplayground'
+  );
+
+  oAuth2Client.setCredentials({ refresh_token: REFRESH_TOKEN });
+
   try {
-    const data = await resend.emails.send({
-      from: process.env.MAIL_FROM || 'onboarding@resend.dev',
-      to: to,
-      subject: subject,
-      text: text,
-      html: html,
+    // Get access token
+    const accessTokenResponse = await oAuth2Client.getAccessToken();
+    const accessToken = accessTokenResponse.token;
+
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        type: 'OAuth2',
+        user: MAIL_USER,
+        clientId: CLIENT_ID,
+        clientSecret: CLIENT_SECRET,
+        refreshToken: REFRESH_TOKEN,
+        accessToken: accessToken,
+      },
     });
 
-    if (data.error) {
-      throw new Error(data.error.message);
-    }
+    const mailOptions = {
+      from: process.env.MAIL_FROM || `Medical Logbook <${MAIL_USER}>`,
+      to,
+      subject,
+      text,
+      html,
+    };
 
-    return data;
+    const result = await transporter.sendMail(mailOptions);
+    return result;
   } catch (error) {
-    console.error('Resend Email Error:', error);
+    console.error('Gmail API Send Error:', error);
     throw error;
   }
 };
