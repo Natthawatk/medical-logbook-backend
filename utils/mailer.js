@@ -1,15 +1,15 @@
 const { google } = require('googleapis');
-const nodemailer = require('nodemailer');
 
 /**
- * Send email using Gmail API with OAuth2
- * This method is reliable on cloud providers like Render because it uses HTTP/HTTPS instead of SMTP ports.
+ * Send email using Gmail REST API with OAuth2
+ * This is the most reliable method for Render because it uses pure HTTPS (Port 443)
+ * and avoids the Nodemailer/SMTP transport altogether.
  */
 exports.sendEmail = async (to, subject, text, html) => {
   const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
   const CLIENT_SECRET = process.env.GMAIL_CLIENT_SECRET;
   const REFRESH_TOKEN = process.env.GMAIL_REFRESH_TOKEN;
-  const MAIL_USER = process.env.MAIL_USER; // The Gmail address used for OAuth
+  const MAIL_USER = process.env.MAIL_USER;
 
   if (!CLIENT_ID || !CLIENT_SECRET || !REFRESH_TOKEN || !MAIL_USER) {
     throw new Error('Gmail API not fully configured. Missing GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN, or MAIL_USER');
@@ -23,35 +23,39 @@ exports.sendEmail = async (to, subject, text, html) => {
 
   oAuth2Client.setCredentials({ refresh_token: REFRESH_TOKEN });
 
-  try {
-    // Get access token
-    const accessTokenResponse = await oAuth2Client.getAccessToken();
-    const accessToken = accessTokenResponse.token;
+  const gmail = google.gmail({ version: 'v1', auth: oAuth2Client });
 
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        type: 'OAuth2',
-        user: MAIL_USER,
-        clientId: CLIENT_ID,
-        clientSecret: CLIENT_SECRET,
-        refreshToken: REFRESH_TOKEN,
-        accessToken: accessToken,
+  // Create RFC 2822 formatted email
+  const utf8Subject = `=?utf-8?B?${Buffer.from(subject).toString('base64')}?=`;
+  const messageParts = [
+    `From: ${process.env.MAIL_FROM || `Medical Logbook <${MAIL_USER}>`}`,
+    `To: ${to}`,
+    'Content-Type: text/html; charset=utf-8',
+    'MIME-Version: 1.0',
+    `Subject: ${utf8Subject}`,
+    '',
+    html || text,
+  ];
+  const message = messageParts.join('\n');
+
+  // The body needs to be base64url encoded
+  const encodedMessage = Buffer.from(message)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  try {
+    const res = await gmail.users.messages.send({
+      userId: 'me',
+      requestBody: {
+        raw: encodedMessage,
       },
     });
-
-    const mailOptions = {
-      from: process.env.MAIL_FROM || `Medical Logbook <${MAIL_USER}>`,
-      to,
-      subject,
-      text,
-      html,
-    };
-
-    const result = await transporter.sendMail(mailOptions);
-    return result;
+    return res.data;
   } catch (error) {
-    console.error('Gmail API Send Error:', error);
+    console.error('Gmail REST API Send Error:', error);
     throw error;
   }
 };
+
