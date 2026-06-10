@@ -1,27 +1,32 @@
 const nodemailer = require('nodemailer');
 
-const requiredEnv = ['MAIL_USER', 'MAIL_APP_PASSWORD'];
-const missingEnv = requiredEnv.filter((key) => !process.env[key]);
+const getTransporter = () => {
+  const requiredEnv = ['MAIL_USER', 'MAIL_APP_PASSWORD'];
+  const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 
-if (missingEnv.length > 0) {
-  // eslint-disable-next-line no-console
-  console.warn(
-    `Mailer not fully configured. Missing env vars: ${missingEnv.join(', ')}`
-  );
-}
+  if (missingEnv.length > 0) {
+    return null;
+  }
 
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.MAIL_USER,
-    pass: process.env.MAIL_APP_PASSWORD,
-  },
-});
+  return nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true, // Use SSL
+    auth: {
+      user: process.env.MAIL_USER,
+      pass: process.env.MAIL_APP_PASSWORD,
+    },
+  });
+};
 
 exports.sendEmail = async (to, subject, text, html) => {
-  if (missingEnv.length > 0) {
+  const transporter = getTransporter();
+
+  if (!transporter) {
+    const requiredEnv = ['MAIL_USER', 'MAIL_APP_PASSWORD'];
+    const missingEnv = requiredEnv.filter((key) => !process.env[key]);
     throw new Error(
-      `Missing mail configuration: ${missingEnv.join(', ')}`
+      `Mailer not fully configured. Missing env vars: ${missingEnv.join(', ')}`
     );
   }
 
@@ -33,3 +38,4 @@ exports.sendEmail = async (to, subject, text, html) => {
     html,
   });
 };
+

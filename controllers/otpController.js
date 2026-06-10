@@ -54,7 +54,7 @@ exports.sendOTP = async (req, res) => {
       await sendEmail(normalizedEmail, subject, text, html);
     } catch (emailErr) {
       // eslint-disable-next-line no-console
-      console.warn('Email sending failed. Please check your .env configuration.');
+      console.error('Email sending failed:', emailErr);
       emailSent = false;
     }
 
