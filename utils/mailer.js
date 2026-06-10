@@ -1,49 +1,29 @@
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
-const getTransporter = () => {
-  const requiredEnv = ['MAIL_USER', 'MAIL_APP_PASSWORD'];
-  const missingEnv = requiredEnv.filter((key) => !process.env[key]);
-
-  if (missingEnv.length > 0) {
-    return null;
-  }
-
-  return nodemailer.createTransport({
-    // Using direct IPv4 address for smtp.gmail.com to bypass Render IPv6 issues
-    host: '142.251.12.109', 
-    port: 465,
-    secure: true, // Use SSL/TLS
-    auth: {
-      user: process.env.MAIL_USER,
-      pass: process.env.MAIL_APP_PASSWORD,
-    },
-    tls: {
-      rejectUnauthorized: false,
-      servername: 'smtp.gmail.com'
-    },
-    connectionTimeout: 20000, // 20 seconds
-    greetingTimeout: 20000,
-    socketTimeout: 20000
-  });
-};
+// Initialize Resend with API Key from environment variables
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 exports.sendEmail = async (to, subject, text, html) => {
-  const transporter = getTransporter();
-
-  if (!transporter) {
-    const requiredEnv = ['MAIL_USER', 'MAIL_APP_PASSWORD'];
-    const missingEnv = requiredEnv.filter((key) => !process.env[key]);
-    throw new Error(
-      `Mailer not fully configured. Missing env vars: ${missingEnv.join(', ')}`
-    );
+  if (!resend) {
+    throw new Error('Mailer not configured: Missing RESEND_API_KEY');
   }
 
-  return transporter.sendMail({
-    from: process.env.MAIL_FROM || process.env.MAIL_USER,
-    to,
-    subject,
-    text,
-    html,
-  });
-};
+  try {
+    const data = await resend.emails.send({
+      from: process.env.MAIL_FROM || 'onboarding@resend.dev',
+      to: to,
+      subject: subject,
+      text: text,
+      html: html,
+    });
 
+    if (data.error) {
+      throw new Error(data.error.message);
+    }
+
+    return data;
+  } catch (error) {
+    console.error('Resend Email Error:', error);
+    throw error;
+  }
+};
