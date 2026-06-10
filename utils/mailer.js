@@ -18,7 +18,9 @@ const getTransporter = () => {
     },
     tls: {
       rejectUnauthorized: false // Often needed for cloud environments
-    }
+    },
+    // Force IPv4 to avoid ENETUNREACH issues on cloud providers like Render
+    family: 4
   });
 };
 
