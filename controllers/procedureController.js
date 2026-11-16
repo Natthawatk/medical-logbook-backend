@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Procedure = require('../models/Procedure');
 const Course = require('../models/Course');
+const { getAccessibleCourseIds, hasCourseAccess, canManageCourse } = require('../services/courseAccessService');
 
 exports.createProcedure = async (req, res) => {
   try {
@@ -37,13 +38,28 @@ exports.createProcedure = async (req, res) => {
         message: 'Course not found for the provided course_id.',
       });
     }
+    if (!(await canManageCourse(req.user, course_id))) {
+      return res.status(403).json({ success: false, data: null, message: 'คุณไม่มีสิทธิ์จัดการรายวิชานี้' });
+    }
+
+    const { error: formError, normalized: normalizedForm } = Procedure.validateFormStructure(
+      form_structure,
+      String(procedure_name || '').trim()
+    );
+    if (formError) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: formError,
+      });
+    }
 
     const created = await Procedure.create({
       course_id,
       procedure_name,
       target_score,
       required_cases,
-      form_structure: Array.isArray(form_structure) ? form_structure : [],
+      form_structure: normalizedForm,
     });
 
     return res.status(201).json({
@@ -64,7 +80,9 @@ exports.createProcedure = async (req, res) => {
 
 exports.getProcedures = async (req, res) => {
   try {
-    const procedures = await Procedure.find().populate('course_id').sort({ createdAt: -1 });
+    const accessibleIds = await getAccessibleCourseIds(req.user);
+    const filter = accessibleIds === null ? {} : { course_id: { $in: accessibleIds } };
+    const procedures = await Procedure.find(filter).populate('course_id').sort({ createdAt: -1 });
     return res.status(200).json({
       success: true,
       data: procedures,
@@ -99,6 +117,9 @@ exports.getProcedureById = async (req, res) => {
         data: null,
         message: 'Procedure not found.',
       });
+    }
+    if (!(await hasCourseAccess(req.user, procedure.course_id._id || procedure.course_id))) {
+      return res.status(403).json({ success: false, data: null, message: 'คุณไม่มีสิทธิ์เข้าถึงหัตถการนี้' });
     }
 
     // Get max progress by any student
@@ -137,6 +158,9 @@ exports.getProceduresByCourse = async (req, res) => {
         data: null,
         message: 'Invalid course_id.',
       });
+    }
+    if (!(await hasCourseAccess(req.user, course_id))) {
+      return res.status(403).json({ success: false, data: null, message: 'คุณไม่มีสิทธิ์เข้าถึงรายวิชานี้' });
     }
 
     const procedures = await Procedure.find({ course_id })
@@ -178,6 +202,9 @@ exports.updateProcedure = async (req, res) => {
         message: 'Procedure not found.',
       });
     }
+    if (!(await canManageCourse(req.user, procedure.course_id))) {
+      return res.status(403).json({ success: false, data: null, message: 'คุณไม่มีสิทธิ์จัดการหัตถการนี้' });
+    }
 
     const {
       course_id,
@@ -214,6 +241,9 @@ exports.updateProcedure = async (req, res) => {
           message: 'Course not found for the provided course_id.',
         });
       }
+      if (!(await canManageCourse(req.user, course_id))) {
+        return res.status(403).json({ success: false, data: null, message: 'คุณไม่มีสิทธิ์ย้ายหัตถการไปยังรายวิชานี้' });
+      }
 
       procedure.course_id = course_id;
     }
@@ -222,16 +252,19 @@ exports.updateProcedure = async (req, res) => {
     if (target_score !== undefined) procedure.target_score = target_score;
     if (required_cases !== undefined) procedure.required_cases = required_cases;
     if (form_structure !== undefined) {
-      if (!Array.isArray(form_structure)) {
+      const { error: formError, normalized: normalizedStructure } = Procedure.validateFormStructure(
+        form_structure,
+        String(procedure_name ?? procedure.procedure_name ?? '').trim()
+      );
+      if (formError) {
         return res.status(400).json({
           success: false,
           data: null,
-          message: 'form_structure must be an array of objects.',
+          message: formError,
         });
       }
-      
-      const oldStructure = procedure.form_structure || [];
-      procedure.form_structure = form_structure;
+
+      procedure.form_structure = normalizedStructure;
 
       // Data Migration Logic (Simplified)
       // If new fields are added, they will be missing in old case_data.
@@ -247,7 +280,7 @@ exports.updateProcedure = async (req, res) => {
           let updated = false;
           const caseData = doc.case_data || {};
           
-          form_structure.forEach(field => {
+          normalizedStructure.forEach(field => {
             if (caseData[field.field_name] === undefined) {
               caseData[field.field_name] = ""; // Default empty value
               updated = true;
@@ -291,6 +324,14 @@ exports.deleteProcedure = async (req, res) => {
         data: null,
         message: 'Invalid procedure id.',
       });
+    }
+
+    const procedure = await Procedure.findById(id).select('course_id');
+    if (!procedure) {
+      return res.status(404).json({ success: false, data: null, message: 'Procedure not found.' });
+    }
+    if (!(await canManageCourse(req.user, procedure.course_id))) {
+      return res.status(403).json({ success: false, data: null, message: 'คุณไม่มีสิทธิ์จัดการหัตถการนี้' });
     }
 
     // Dependency Check: Prevent deleting procedure if linked to cases

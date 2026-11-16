@@ -4,6 +4,11 @@ const { Schema } = mongoose;
 
 const locationSchema = new Schema(
   {
+    created_by: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
     Location_name: {
       type: String,
       required: true,

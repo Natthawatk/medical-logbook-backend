@@ -1,10 +1,13 @@
 const mongoose = require('mongoose');
 const Location = require('../models/Location');
-const User = require('../models/User');
+const Course = require('../models/Course');
+const CourseLocation = require('../models/CourseLocation');
+const { getAccessibleCourseIds } = require('../services/courseAccessService');
+const { asTrimmedString } = require('../middlewares/securityMiddleware');
 
 exports.createLocation = async (req, res) => {
   try {
-    const { Location_name, semester, Location_image, latitude, longitude, radius, assigned_preceptors } =
+    const { Location_name, semester, Location_image, latitude, longitude, radius } =
       req.body || {};
 
     if (!Location_name || latitude === undefined || longitude === undefined) {
@@ -25,6 +28,7 @@ exports.createLocation = async (req, res) => {
     }
 
     const created = await Location.create({
+      created_by: req.user.id,
       Location_name,
       semester,
       Location_image,
@@ -32,14 +36,6 @@ exports.createLocation = async (req, res) => {
       longitude,
       radius,
     });
-
-    // Handle Preceptor Assignments (Added)
-    if (Array.isArray(assigned_preceptors) && assigned_preceptors.length > 0) {
-      await User.updateMany(
-        { _id: { $in: assigned_preceptors } },
-        { $set: { workplace: created._id } }
-      );
-    }
 
     return res.status(201).json({
       success: true,
@@ -59,31 +55,30 @@ exports.createLocation = async (req, res) => {
 
 exports.getLocations = async (req, res) => {
   try {
-    const { semester } = req.query;
+    const semester = asTrimmedString(req.query.semester);
+    const scope = asTrimmedString(req.query.scope);
     const filter = {};
     if (semester) filter.semester = semester;
 
+    const allowEnrollable = req.user.role === 'course_instructor' && scope === 'enrollable';
+    if (req.user.role !== 'admin' && !allowEnrollable) {
+      const courseIds = await getAccessibleCourseIds(req.user);
+      const [linkedIds, courses] = await Promise.all([
+        CourseLocation.find({ course_id: { $in: courseIds }, status: 'active' }).distinct('location_id'),
+        Course.find({ _id: { $in: courseIds } }).select('enrolled_locations').lean(),
+      ]);
+      const uniqueLocationIds = [...new Set([
+        ...linkedIds.map((id) => String(id)),
+        ...courses.flatMap((course) => (course.enrolled_locations || []).map((id) => String(id))),
+      ])];
+      filter._id = { $in: uniqueLocationIds };
+    }
+
     const locations = await Location.find(filter).sort({ createdAt: -1 }).lean();
-    
-    // Calculate preceptor counts
-    const preceptorStats = await User.aggregate([
-      { $match: { role: 'preceptor', workplace: { $ne: null } } },
-      { $group: { _id: '$workplace', count: { $sum: 1 } } }
-    ]);
-
-    const statsMap = preceptorStats.reduce((acc, curr) => {
-      acc[curr._id.toString()] = curr.count;
-      return acc;
-    }, {});
-
-    const results = locations.map(loc => ({
-      ...loc,
-      preceptor_count: statsMap[loc._id.toString()] || 0
-    }));
 
     return res.status(200).json({
       success: true,
-      data: results,
+      data: locations,
       message: 'Locations fetched successfully.',
     });
   } catch (err) {
@@ -117,13 +112,14 @@ exports.getLocationById = async (req, res) => {
       });
     }
 
-    // Find assigned preceptors (Added)
-    const preceptors = await User.find({
-      role: 'preceptor',
-      workplace: id
-    }).select('firstname_lastname email profile_image _id').lean();
-
-    location.assigned_preceptors = preceptors;
+    if (req.user.role !== 'admin') {
+      const courseIds = await getAccessibleCourseIds(req.user);
+      const linked = await CourseLocation.exists({ course_id: { $in: courseIds }, location_id: id, status: 'active' });
+      const ownsLocation = req.user.role === 'course_instructor' && String(location.created_by || '') === String(req.user.id);
+      if (!linked && !ownsLocation) {
+        return res.status(403).json({ success: false, data: null, message: 'คุณไม่มีสิทธิ์เข้าถึงสถานที่นี้' });
+      }
+    }
 
     return res.status(200).json({
       success: true,
@@ -161,7 +157,7 @@ exports.updateLocation = async (req, res) => {
       });
     }
 
-    const { Location_name, semester, Location_image, latitude, longitude, radius, assigned_preceptors } =
+    const { Location_name, semester, Location_image, latitude, longitude, radius } =
       req.body || {};
 
     if (Location_name !== undefined) {
@@ -181,15 +177,12 @@ exports.updateLocation = async (req, res) => {
 
     if (semester !== undefined && semester !== location.semester) {
       const Shift = mongoose.model('Shift');
-      const [hasPreceptors, hasShifts] = await Promise.all([
-        User.exists({ workplace: id }),
-        Shift.exists({ location_id: id })
-      ]);
+      const hasShifts = await Shift.exists({ location_id: id });
 
-      if (hasPreceptors || hasShifts) {
+      if (hasShifts) {
         return res.status(400).json({
           success: false,
-          message: 'ไม่สามารถแก้ไขเทอมของสถานที่ได้ เนื่องจากมีการมอบหมายอาจารย์หรือมีประวัติการลงเวลาแล้ว'
+          message: 'ไม่สามารถแก้ไขเทอมของสถานที่ได้ เนื่องจากมีประวัติการลงเวลาแล้ว'
         });
       }
       location.semester = semester;
@@ -200,21 +193,6 @@ exports.updateLocation = async (req, res) => {
     if (radius !== undefined) location.radius = radius;
 
     await location.save();
-
-    // Handle Preceptor Assignments Sync (Added)
-    if (Array.isArray(assigned_preceptors)) {
-      // 1. Remove this workplace from preceptors who were previously assigned but now removed
-      await User.updateMany(
-        { workplace: id, _id: { $nin: assigned_preceptors } },
-        { $unset: { workplace: 1 } }
-      );
-
-      // 2. Assign this workplace to preceptors in the new list
-      await User.updateMany(
-        { _id: { $in: assigned_preceptors }, role: 'preceptor' },
-        { $set: { workplace: id } }
-      );
-    }
 
     return res.status(200).json({
       success: true,
@@ -245,15 +223,12 @@ exports.deleteLocation = async (req, res) => {
 
     // Dependency Check: Prevent deleting location if linked to data
     const Shift = mongoose.model('Shift');
-    const [hasPreceptors, hasShifts] = await Promise.all([
-      User.exists({ workplace: id }),
-      Shift.exists({ location_id: id })
-    ]);
+    const hasShifts = await Shift.exists({ location_id: id });
 
-    if (hasPreceptors || hasShifts) {
+    if (hasShifts) {
       return res.status(400).json({
         success: false,
-        message: 'ไม่สามารถลบสถานที่นี้ได้ เนื่องจากมีอาจารย์พี่เลี้ยงสังกัดอยู่ หรือมีบันทึกประวัติการลงเวลาของนักศึกษา กรุณาย้ายข้อมูลที่เกี่ยวข้องก่อนทำการลบ'
+        message: 'ไม่สามารถลบสถานที่นี้ได้ เนื่องจากมีประวัติการลงเวลาของนักศึกษา กรุณาย้ายข้อมูลที่เกี่ยวข้องก่อนทำการลบ'
       });
     }
 

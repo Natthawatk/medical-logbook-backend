@@ -3,15 +3,25 @@ const bcrypt = require('bcryptjs');
 
 const User = require('../models/User');
 const OTP = require('../models/OTP');
+const { JWT_SECRET } = require('../config/environment');
+const {
+  asString,
+  asTrimmedString,
+  validatePassword,
+  hashScopedToken,
+} = require('../middlewares/securityMiddleware');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+const MAX_FAILED_LOGIN_ATTEMPTS = 5;
+const ACCOUNT_LOCK_DURATION_MS = 15 * 60 * 1000;
+const DUMMY_BCRYPT_HASH = '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
 
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const rawEmail = asTrimmedString(req.body?.email).toLowerCase();
+    const rawPassword = asString(req.body?.password);
 
-    if (!email || !password) {
+    if (!rawEmail || !rawPassword) {
       return res.status(400).json({
         success: false,
         data: null,
@@ -19,19 +29,52 @@ exports.login = async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ email }).select('+password');
+    const user = await User.findOne({ email: rawEmail }).select(
+      '+password +failed_login_attempts +lock_until +token_version'
+    );
 
     if (!user) {
-      return res.status(404).json({
+      // Constant-ish timing mitigation against user enumeration
+      await bcrypt.compare(rawPassword, DUMMY_BCRYPT_HASH);
+      return res.status(401).json({
         success: false,
         data: null,
-        message: 'ไม่พบบัญชีผู้ใช้ในระบบ กรุณาติดต่อผู้ดูแลระบบ',
+        message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง',
       });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
+    if (user.lock_until && user.lock_until > new Date()) {
+      const remainingMinutes = Math.max(
+        1,
+        Math.ceil((user.lock_until.getTime() - Date.now()) / (60 * 1000))
+      );
+      return res.status(429).json({
+        success: false,
+        data: null,
+        message: `บัญชีถูกล็อกชั่วคราวเนื่องจากใส่รหัสผ่านผิดหลายครั้ง กรุณาลองใหม่ในอีก ${remainingMinutes} นาที`,
+      });
+    }
+
+    const isMatch = user.password
+      ? await bcrypt.compare(rawPassword, user.password)
+      : false;
 
     if (!isMatch) {
+      const nextAttempts = (user.failed_login_attempts || 0) + 1;
+      const updatePayload = { failed_login_attempts: nextAttempts };
+      if (nextAttempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
+        updatePayload.lock_until = new Date(Date.now() + ACCOUNT_LOCK_DURATION_MS);
+      }
+      await User.updateOne({ _id: user._id }, { $set: updatePayload });
+
+      if (nextAttempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
+        return res.status(429).json({
+          success: false,
+          data: null,
+          message: 'ใส่รหัสผ่านผิดเกินกำหนด บัญชีถูกล็อกชั่วคราว 15 นาที',
+        });
+      }
+
       return res.status(401).json({
         success: false,
         data: null,
@@ -48,10 +91,18 @@ exports.login = async (req, res) => {
       });
     }
 
+    if ((user.failed_login_attempts || 0) > 0 || user.lock_until) {
+      await User.updateOne(
+        { _id: user._id },
+        { $set: { failed_login_attempts: 0, lock_until: null } }
+      );
+    }
+
     const token = jwt.sign(
       {
         id: user._id,
         role: user.role,
+        tv: user.token_version || 0,
       },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
@@ -86,53 +137,44 @@ exports.login = async (req, res) => {
 
 exports.resetPassword = async (req, res) => {
   try {
-    const { email, otp, new_password } = req.body || {};
+    const normalizedEmail = asTrimmedString(req.body?.email).toLowerCase();
+    const resetToken = asTrimmedString(req.body?.reset_token);
+    const newPassword = asString(req.body?.new_password);
 
-    if (!email || !otp || !new_password) {
+    if (!normalizedEmail || !resetToken || !newPassword) {
       return res.status(400).json({
         success: false,
         data: null,
-        message: 'กรุณาระบุอีเมล รหัส OTP และรหัสผ่านใหม่',
+        message: 'กรุณาระบุอีเมล โทเค็นยืนยัน และรหัสผ่านใหม่',
       });
     }
 
-    const normalizedEmail = String(email).toLowerCase().trim();
+    const passwordError = validatePassword(newPassword);
+    if (passwordError) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: passwordError,
+      });
+    }
 
-    // 1. ตรวจสอบความถูกต้องของ OTP
+    const expectedTokenHash = hashScopedToken(`reset:${normalizedEmail}`, resetToken);
     const otpDoc = await OTP.findOne({
       email: normalizedEmail,
-      otp_code: String(otp).trim(),
+      is_used: true,
+      reset_token_hash: expectedTokenHash,
+      reset_token_expires_at: { $gt: new Date() },
     }).sort({ created_at: -1 });
 
     if (!otpDoc) {
       return res.status(400).json({
         success: false,
         data: null,
-        message: 'รหัส OTP ไม่ถูกต้อง',
+        message: 'โทเค็นยืนยันไม่ถูกต้องหรือหมดอายุแล้ว กรุณาขอรหัส OTP ใหม่อีกครั้ง',
       });
     }
 
-    // ถ้า OTP ถูกใช้ไปนานแล้ว (เกิน 5 นาที) ถึงจะถือว่าใช้ไม่ได้
-    // แต่ถ้าเพิ่งใช้ไปหยกๆ (อาจเกิดจากการกด verify ก่อนหน้า) ให้ยอมให้ผ่านได้
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-    if (otpDoc.is_used && otpDoc.updated_at < fiveMinutesAgo) {
-      return res.status(400).json({
-        success: false,
-        data: null,
-        message: 'รหัส OTP นี้ถูกใช้งานไปแล้ว',
-      });
-    }
-
-    if (new Date() > otpDoc.expires_at) {
-      return res.status(400).json({
-        success: false,
-        data: null,
-        message: 'รหัส OTP หมดอายุแล้ว',
-      });
-    }
-
-    // 2. ค้นหา User และอัปเดตรหัสผ่าน
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await User.findOne({ email: normalizedEmail }).select('+token_version');
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -141,13 +183,13 @@ exports.resetPassword = async (req, res) => {
       });
     }
 
-    // อัปเดตรหัสผ่าน (pre-save hook ใน models/User.js จะทำการ hash ให้เอง)
-    user.password = new_password;
+    user.password = newPassword;
+    user.failed_login_attempts = 0;
+    user.lock_until = null;
     await user.save();
 
-    // 3. ปิดการใช้งาน OTP นี้
-    otpDoc.is_used = true;
-    await otpDoc.save();
+    // Consume all OTP/reset records for this email so the token cannot be reused.
+    await OTP.deleteMany({ email: normalizedEmail });
 
     return res.status(200).json({
       success: true,
@@ -164,4 +206,3 @@ exports.resetPassword = async (req, res) => {
     });
   }
 };
-

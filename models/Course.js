@@ -4,6 +4,11 @@ const { Schema } = mongoose;
 
 const courseSchema = new Schema(
   {
+    created_by: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
     course_code: {
       type: String,
       required: true,

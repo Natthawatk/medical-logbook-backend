@@ -1,7 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+const { JWT_SECRET } = require('../config/environment');
 
 // Protect routes - require valid JWT
 exports.protect = async (req, res, next) => {
@@ -34,13 +33,21 @@ exports.protect = async (req, res, next) => {
       });
     }
 
-    const user = await User.findById(decoded.id);
+    const user = await User.findById(decoded.id).select('+token_version');
 
     if (!user) {
       return res.status(401).json({
         success: false,
         data: null,
         message: 'User linked to this token no longer exists.',
+      });
+    }
+
+    if ((decoded.tv ?? 0) !== (user.token_version ?? 0)) {
+      return res.status(401).json({
+        success: false,
+        data: null,
+        message: 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่อีกครั้ง',
       });
     }
 
@@ -60,7 +67,7 @@ exports.protect = async (req, res, next) => {
       academic_status: user.academic_status,
     };
 
-    next();
+    return next();
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('Auth protect error:', err);
@@ -83,7 +90,6 @@ exports.authorize = (...roles) => {
       });
     }
 
-    next();
+    return next();
   };
 };
-

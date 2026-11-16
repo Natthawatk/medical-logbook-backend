@@ -10,6 +10,7 @@ router.use(protect);
 router.post('/check-in', authorize('student'), shiftController.checkIn);
 router.get('/my', authorize('student'), shiftController.getMyShifts);
 router.get('/preceptor/shifts', authorize('preceptor'), shiftController.getPreceptorShifts);
+router.get('/user/:id', authorize('admin', 'course_instructor'), shiftController.getUserShifts);
 router.put('/:id/verify', authorize('admin', 'preceptor'), shiftController.verifyShift);
 
 module.exports = router;

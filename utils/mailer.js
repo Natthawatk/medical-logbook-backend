@@ -1,4 +1,5 @@
 const { google } = require('googleapis');
+const { stripEmailHeaderChars } = require('../middlewares/securityMiddleware');
 
 /**
  * Send email using Gmail REST API with OAuth2
@@ -15,6 +16,10 @@ exports.sendEmail = async (to, subject, text, html) => {
     throw new Error('Gmail API not fully configured. Missing GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN, or MAIL_USER');
   }
 
+  const safeTo = stripEmailHeaderChars(to);
+  const safeSubject = stripEmailHeaderChars(subject);
+  const safeFrom = stripEmailHeaderChars(process.env.MAIL_FROM || `Medical Logbook <${MAIL_USER}>`);
+
   const oAuth2Client = new google.auth.OAuth2(
     CLIENT_ID,
     CLIENT_SECRET,
@@ -26,10 +31,10 @@ exports.sendEmail = async (to, subject, text, html) => {
   const gmail = google.gmail({ version: 'v1', auth: oAuth2Client });
 
   // Create RFC 2822 formatted email
-  const utf8Subject = `=?utf-8?B?${Buffer.from(subject).toString('base64')}?=`;
+  const utf8Subject = `=?utf-8?B?${Buffer.from(safeSubject).toString('base64')}?=`;
   const messageParts = [
-    `From: ${process.env.MAIL_FROM || `Medical Logbook <${MAIL_USER}>`}`,
-    `To: ${to}`,
+    `From: ${safeFrom}`,
+    `To: ${safeTo}`,
     'Content-Type: text/html; charset=utf-8',
     'MIME-Version: 1.0',
     `Subject: ${utf8Subject}`,

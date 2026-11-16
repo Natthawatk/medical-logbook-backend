@@ -5,13 +5,13 @@ const procedureController = require('../controllers/procedureController');
 
 const router = express.Router();
 
-router.use(protect, authorize('admin'));
+router.use(protect);
 
-router.post('/', procedureController.createProcedure);
+router.post('/', authorize('admin', 'course_instructor'), procedureController.createProcedure);
 router.get('/', procedureController.getProcedures);
 router.get('/course/:course_id', procedureController.getProceduresByCourse);
 router.get('/:id', procedureController.getProcedureById);
-router.put('/:id', procedureController.updateProcedure);
-router.delete('/:id', procedureController.deleteProcedure);
+router.put('/:id', authorize('admin', 'course_instructor'), procedureController.updateProcedure);
+router.delete('/:id', authorize('admin', 'course_instructor'), procedureController.deleteProcedure);
 
 module.exports = router;

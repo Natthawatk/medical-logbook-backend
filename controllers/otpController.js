@@ -1,14 +1,26 @@
+const crypto = require('crypto');
 const OTP = require('../models/OTP');
 const User = require('../models/User');
 const { sendEmail } = require('../utils/mailer');
+const {
+  asTrimmedString,
+  hashScopedToken,
+  timingSafeEqualHex,
+} = require('../middlewares/securityMiddleware');
 
-const generateOTP = () => String(Math.floor(100000 + Math.random() * 900000));
+const OTP_TTL_MS = 5 * 60 * 1000;
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+const MAX_OTP_VERIFY_ATTEMPTS = 5;
+const RESET_TOKEN_TTL_MS = 10 * 60 * 1000;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const generateOTP = () => String(crypto.randomInt(100000, 1000000));
 
 exports.sendOTP = async (req, res) => {
   try {
-    const { email } = req.body || {};
+    const normalizedEmail = asTrimmedString(req.body?.email).toLowerCase();
 
-    if (!email) {
+    if (!normalizedEmail) {
       return res.status(400).json({
         success: false,
         data: null,
@@ -16,26 +28,54 @@ exports.sendOTP = async (req, res) => {
       });
     }
 
-    const normalizedEmail = String(email).toLowerCase().trim();
+    if (!EMAIL_REGEX.test(normalizedEmail)) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: 'รูปแบบอีเมลไม่ถูกต้อง',
+      });
+    }
 
-    // Check if user exists in the system
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await User.findOne({ email: normalizedEmail }).select('_id academic_status');
     if (!user) {
       return res.status(404).json({
         success: false,
         data: null,
-        message: 'ไม่พบบัญชีผู้ใช้ในระบบ กรุณาติดต่อผู้ดูแลระบบ',
+        message: 'ไม่พบบัญชีอีเมลนี้ในระบบ กรุณาตรวจสอบอีกครั้งหรือติดต่อผู้ดูแลระบบ',
+      });
+    }
+
+    if (user.academic_status === 'inactive') {
+      return res.status(403).json({
+        success: false,
+        data: null,
+        message: 'บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ',
+      });
+    }
+
+    const existingLatest = await OTP.findOne({ email: normalizedEmail }).sort({ created_at: -1 });
+    if (
+      existingLatest &&
+      existingLatest.created_at &&
+      Date.now() - existingLatest.created_at.getTime() < OTP_RESEND_COOLDOWN_MS
+    ) {
+      return res.status(429).json({
+        success: false,
+        data: null,
+        message: 'กรุณารอสักครู่ (60 วินาที) ก่อนขอรหัส OTP ใหม่อีกครั้ง',
       });
     }
 
     const otp = generateOTP();
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + OTP_TTL_MS);
 
+    await OTP.deleteMany({ email: normalizedEmail });
     await OTP.create({
       email: normalizedEmail,
-      otp_code: otp,
+      otp_code: hashScopedToken(`otp:${normalizedEmail}`, otp),
       expires_at: expiresAt,
       is_used: false,
+      attempts: 0,
     });
 
     const subject = 'รหัส OTP สำหรับเข้าใช้งาน Medical Logbook';
@@ -63,8 +103,8 @@ exports.sendOTP = async (req, res) => {
       data: {
         email_sent: emailSent,
       },
-      message: emailSent 
-        ? 'ส่งรหัส OTP เรียบร้อยแล้ว' 
+      message: emailSent
+        ? 'ส่งรหัส OTP ไปยังอีเมลของคุณเรียบร้อยแล้ว'
         : 'สร้างรหัส OTP สำเร็จ (แต่ส่งอีเมลไม่สำเร็จ กรุณาติดต่อผู้ดูแลระบบ)',
     });
   } catch (err) {
@@ -80,9 +120,10 @@ exports.sendOTP = async (req, res) => {
 
 exports.verifyOTP = async (req, res) => {
   try {
-    const { email, otp } = req.body || {};
+    const normalizedEmail = asTrimmedString(req.body?.email).toLowerCase();
+    const normalizedOtp = asTrimmedString(req.body?.otp);
 
-    if (!email || !otp) {
+    if (!normalizedEmail || !normalizedOtp) {
       return res.status(400).json({
         success: false,
         data: null,
@@ -90,15 +131,54 @@ exports.verifyOTP = async (req, res) => {
       });
     }
 
-    const normalizedEmail = String(email).toLowerCase().trim();
-    const normalizedOtp = String(otp).trim();
-
     const otpDoc = await OTP.findOne({
       email: normalizedEmail,
-      otp_code: normalizedOtp,
+      is_used: false,
     }).sort({ created_at: -1 });
 
     if (!otpDoc) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: 'รหัส OTP ไม่ถูกต้องหรือหมดอายุแล้ว',
+      });
+    }
+
+    if (new Date() > otpDoc.expires_at) {
+      await OTP.deleteOne({ _id: otpDoc._id });
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: 'รหัส OTP หมดอายุแล้ว กรุณาขอรหัสใหม่',
+      });
+    }
+
+    if ((otpDoc.attempts || 0) >= MAX_OTP_VERIFY_ATTEMPTS) {
+      await OTP.deleteOne({ _id: otpDoc._id });
+      return res.status(429).json({
+        success: false,
+        data: null,
+        message: 'กรอกรหัส OTP ผิดเกินจำนวนครั้งที่กำหนด กรุณาขอรหัสใหม่',
+      });
+    }
+
+    const submittedHash = hashScopedToken(`otp:${normalizedEmail}`, normalizedOtp);
+    const isValid = timingSafeEqualHex(otpDoc.otp_code, submittedHash);
+
+    if (!isValid) {
+      const nextAttempts = (otpDoc.attempts || 0) + 1;
+      if (nextAttempts >= MAX_OTP_VERIFY_ATTEMPTS) {
+        await OTP.deleteOne({ _id: otpDoc._id });
+        return res.status(429).json({
+          success: false,
+          data: null,
+          message: 'กรอกรหัส OTP ผิดเกินจำนวนครั้งที่กำหนด กรุณาขอรหัสใหม่',
+        });
+      }
+
+      otpDoc.attempts = nextAttempts;
+      await otpDoc.save();
+
       return res.status(400).json({
         success: false,
         data: null,
@@ -106,28 +186,17 @@ exports.verifyOTP = async (req, res) => {
       });
     }
 
-    if (otpDoc.is_used) {
-      return res.status(400).json({
-        success: false,
-        data: null,
-        message: 'รหัส OTP นี้ถูกใช้งานไปแล้ว',
-      });
-    }
-
-    if (new Date() > otpDoc.expires_at) {
-      return res.status(400).json({
-        success: false,
-        data: null,
-        message: 'รหัส OTP หมดอายุแล้ว',
-      });
-    }
-
+    const resetToken = crypto.randomBytes(32).toString('hex');
     otpDoc.is_used = true;
+    otpDoc.reset_token_hash = hashScopedToken(`reset:${normalizedEmail}`, resetToken);
+    otpDoc.reset_token_expires_at = new Date(Date.now() + RESET_TOKEN_TTL_MS);
     await otpDoc.save();
 
     return res.status(200).json({
       success: true,
-      data: null,
+      data: {
+        resetToken,
+      },
       message: 'ยืนยันรหัส OTP สำเร็จ',
     });
   } catch (err) {

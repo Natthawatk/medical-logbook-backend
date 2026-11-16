@@ -4,8 +4,17 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const compression = require('compression');
+const multer = require('multer');
+const { validateEnvironment } = require('./config/environment');
+const { securityHeaders, sanitizeRequestInputs } = require('./middlewares/securityMiddleware');
+
+validateEnvironment();
 
 const app = express();
+app.disable('x-powered-by');
+if (process.env.NODE_ENV === 'production' || process.env.TRUST_PROXY === 'true') {
+  app.set('trust proxy', 1);
+}
 
 // Routes
 const authRoutes = require('./routes/authRoutes');
@@ -20,9 +29,30 @@ const dashboardRoutes = require('./routes/dashboardRoutes');
 const otpRoutes = require('./routes/otpRoutes');
 
 // Middleware
-app.use(cors());
+const rawCorsOrigins = process.env.CORS_ORIGINS || (
+  process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5173,http://localhost'
+);
+const allowedOrigins = rawCorsOrigins
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(securityHeaders);
+app.use(cors({
+  origin(origin, callback) {
+    // Requests without Origin include server-to-server calls and health checks.
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    const error = new Error('Origin is not allowed by CORS.');
+    error.code = 'CORS_NOT_ALLOWED';
+    return callback(error);
+  },
+}));
 app.use(compression());
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
+app.use(sanitizeRequestInputs);
 
 // MongoDB Connection
 const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/medical_logbook';
@@ -66,9 +96,56 @@ app.use('/api/shifts', shiftRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/otp', otpRoutes);
 
+// Keep CORS, Multer, and malformed-JSON failures consistent with the API response contract.
+app.use((err, req, res, next) => {
+  if (err && err.code === 'CORS_NOT_ALLOWED') {
+    return res.status(403).json({
+      success: false,
+      data: null,
+      message: err.message,
+    });
+  }
+
+  if (err instanceof multer.MulterError) {
+    const message = err.code === 'LIMIT_FILE_SIZE'
+      ? 'ขนาดไฟล์เกินกำหนด (สูงสุด 2MB)'
+      : 'รูปแบบการอัปโหลดไฟล์ไม่ถูกต้อง';
+    return res.status(400).json({
+      success: false,
+      data: null,
+      message,
+    });
+  }
+
+  if (err && err.code === 'INVALID_FILE_TYPE') {
+    return res.status(400).json({
+      success: false,
+      data: null,
+      message: err.message,
+    });
+  }
+
+  if (err && (err.type === 'entity.parse.failed' || (err instanceof SyntaxError && err.status === 400 && 'body' in err))) {
+    return res.status(400).json({
+      success: false,
+      data: null,
+      message: 'รูปแบบข้อมูล JSON ไม่ถูกต้อง',
+    });
+  }
+
+  if (err) {
+    return res.status(err.status || 500).json({
+      success: false,
+      data: null,
+      message: err.status && err.status < 500 ? err.message : 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์',
+    });
+  }
+
+  return next();
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`Server listening on port ${PORT}`);
 });
-

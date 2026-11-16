@@ -4,6 +4,19 @@ const { Schema } = mongoose;
 
 const shiftSchema = new Schema(
   {
+    course_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'Course',
+      required: function requireCourseForNewShift() {
+        return !this.is_legacy;
+      },
+      index: true,
+    },
+    is_legacy: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     student_id: {
       type: Schema.Types.ObjectId,
       ref: 'User',

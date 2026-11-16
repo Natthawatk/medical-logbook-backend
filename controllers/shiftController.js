@@ -1,15 +1,19 @@
 const mongoose = require('mongoose');
 const Shift = require('../models/Shift');
 const Location = require('../models/Location');
+const CourseAssignment = require('../models/CourseAssignment');
+const CourseLocation = require('../models/CourseLocation');
+const Course = require('../models/Course');
+const { getAccessibleCourseIds, hasCourseAccess } = require('../services/courseAccessService');
 const { calculateDistanceInMeters } = require('../utils/distanceHelper');
 
 const { createNotification } = require('./notificationController');
 
 exports.checkIn = async (req, res) => {
   try {
-    const { location_id, preceptor_id, latitude, longitude } = req.body || {};
+    const { course_id, location_id, preceptor_id, latitude, longitude } = req.body || {};
 
-    if (!location_id || latitude === undefined || longitude === undefined) {
+    if (!course_id || !location_id || !preceptor_id || latitude === undefined || longitude === undefined) {
       return res.status(400).json({
         success: false,
         data: null,
@@ -17,7 +21,7 @@ exports.checkIn = async (req, res) => {
       });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(location_id)) {
+    if (!mongoose.Types.ObjectId.isValid(course_id) || !mongoose.Types.ObjectId.isValid(location_id)) {
       return res.status(400).json({
         success: false,
         data: null,
@@ -51,6 +55,22 @@ exports.checkIn = async (req, res) => {
       });
     }
 
+    const [studentAssignment, preceptorAssignment, courseLocation, legacyCourseLocation] = await Promise.all([
+      hasCourseAccess(req.user, course_id, ['student']),
+      hasCourseAccess({ id: preceptor_id, role: 'preceptor' }, course_id, ['preceptor']),
+      CourseLocation.exists({ course_id, location_id, status: 'active' }),
+      Course.exists({ _id: course_id, enrolled_locations: location_id }),
+    ]);
+    if (!studentAssignment) {
+      return res.status(403).json({ success: false, data: null, message: 'คุณไม่ได้เป็นนักศึกษาในรายวิชานี้' });
+    }
+    if (!preceptorAssignment) {
+      return res.status(400).json({ success: false, data: null, message: 'พี่เลี้ยงไม่ได้อยู่ในรายวิชานี้' });
+    }
+    if (!courseLocation && !legacyCourseLocation) {
+      return res.status(400).json({ success: false, data: null, message: 'สถานที่ไม่ได้อยู่ในรายวิชานี้' });
+    }
+
     const allowedRadius = Number(location.radius || 0);
     const distance = calculateDistanceInMeters(
       Number(latitude),
@@ -68,6 +88,7 @@ exports.checkIn = async (req, res) => {
     }
 
     const createdShift = await Shift.create({
+      course_id,
       student_id: req.user.id,
       location_id,
       preceptor_id,
@@ -85,7 +106,7 @@ exports.checkIn = async (req, res) => {
         sender_id: req.user.id,
         target_id: createdShift._id,
         type: 'shift_checkin', // Adjusted type for shifts
-        message: `มีนิสิตลงเวลาเข้าเวรที่ ${location.Location_name} รอการยืนยันจากคุณ`,
+        message: `มีนักศึกษาลงเวลาเข้าเวรที่ ${location.Location_name} รอการยืนยันจากคุณ`,
       });
     }
 
@@ -175,14 +196,14 @@ exports.getPreceptorShifts = async (req, res) => {
         limit,
         totalPages: Math.ceil(total / limit),
       },
-      message: 'ดึงข้อมูลการเข้าเวรของนิสิตสำเร็จ',
+      message: 'ดึงข้อมูลการเข้าเวรของนักศึกษาสำเร็จ',
     });
   } catch (err) {
     console.error('Get preceptor shifts error:', err);
     return res.status(500).json({
       success: false,
       data: null,
-      message: 'เกิดข้อผิดพลาดที่ไม่คาดคิดขณะดึงข้อมูลการเข้าเวรของนิสิต',
+      message: 'เกิดข้อผิดพลาดที่ไม่คาดคิดขณะดึงข้อมูลการเข้าเวรของนักศึกษา',
     });
   }
 };
@@ -251,6 +272,23 @@ exports.verifyShift = async (req, res) => {
       });
     }
 
+    if (req.user.role === 'preceptor') {
+      if (!shift.preceptor_id || String(shift.preceptor_id) !== String(req.user.id)) {
+        return res.status(403).json({ success: false, data: null, message: 'คุณไม่ได้เป็นพี่เลี้ยงที่ระบุในเวรนี้' });
+      }
+      if (shift.course_id) {
+        const activeAssignment = await CourseAssignment.exists({
+          course_id: shift.course_id,
+          user_id: req.user.id,
+          assignment_role: 'preceptor',
+          status: 'active',
+        });
+        if (!activeAssignment) {
+          return res.status(403).json({ success: false, data: null, message: 'คุณไม่มีสิทธิ์ยืนยันเวรในรายวิชานี้' });
+        }
+      }
+    }
+
     const updatedShift = await Shift.findByIdAndUpdate(
       id,
       { $set: updateData },
@@ -283,5 +321,33 @@ exports.verifyShift = async (req, res) => {
       data: null,
       message: 'เกิดข้อผิดพลาดที่ไม่คาดคิดขณะยืนยันการเข้าเวร',
     });
+  }
+};
+
+
+exports.getUserShifts = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, data: null, message: 'รหัสนักศึกษาไม่ถูกต้อง' });
+    }
+
+    const query = { student_id: new mongoose.Types.ObjectId(id) };
+    if (req.user.role === 'course_instructor') {
+      const courseIds = await getAccessibleCourseIds(req.user, ['course_instructor']);
+      query.course_id = { $in: courseIds };
+    }
+
+    const shifts = await Shift.find(query)
+      .populate('location_id', 'Location_name')
+      .populate('preceptor_id', 'firstname_lastname email')
+      .sort({ shift_date: -1, createdAt: -1 })
+      .lean();
+
+    return res.status(200).json({ success: true, data: shifts });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Get user shifts error:', err);
+    return res.status(500).json({ success: false, data: null, message: 'ไม่สามารถดึงข้อมูลการเข้าเวรได้' });
   }
 };

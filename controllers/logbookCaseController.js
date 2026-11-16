@@ -4,7 +4,10 @@ const Procedure = require('../models/Procedure');
 const Course = require('../models/Course');
 const User = require('../models/User');
 const Notification = require('../models/Notification');
+const CourseAssignment = require('../models/CourseAssignment');
+const CourseLocation = require('../models/CourseLocation');
 const { createNotification } = require('./notificationController');
+const { canManageCourse } = require('../services/courseAccessService');
 
 const ALLOWED_EVALUATION_STATUS = ['approved', 'rejected'];
 
@@ -63,17 +66,38 @@ exports.createCase = async (req, res) => {
       });
     }
 
-    // Validation: Check if student is enrolled in the course associated with this procedure
-    const isEnrolled = student.enrolled_courses.some(
-      (courseId) => courseId.toString() === procedure.course_id.toString()
-    );
+    const [studentAssignment, preceptorAssignment, courseLocation] = await Promise.all([
+      CourseAssignment.exists({
+        course_id: procedure.course_id,
+        user_id: req.user.id,
+        assignment_role: 'student',
+        status: 'active',
+      }),
+      CourseAssignment.exists({
+        course_id: procedure.course_id,
+        user_id: preceptor_id,
+        assignment_role: 'preceptor',
+        status: 'active',
+      }),
+      CourseLocation.exists({
+        course_id: procedure.course_id,
+        location_id,
+        status: 'active',
+      }),
+    ]);
 
-    if (!isEnrolled) {
+    if (!studentAssignment) {
       return res.status(403).json({
         success: false,
         data: null,
         message: 'คุณไม่ได้ลงทะเบียนในรายวิชาที่เกี่ยวข้องกับหัตถการนี้ จึงไม่สามารถบันทึกเคสได้',
       });
+    }
+    if (!preceptorAssignment) {
+      return res.status(400).json({ success: false, data: null, message: 'พี่เลี้ยงไม่ได้อยู่ในรายวิชานี้' });
+    }
+    if (!courseLocation) {
+      return res.status(400).json({ success: false, data: null, message: 'สถานที่ไม่ได้อยู่ในรายวิชานี้' });
     }
 
     const createdCase = await LogbookCase.create({
@@ -277,7 +301,7 @@ exports.getCaseById = async (req, res) => {
 
     const logbookCase = await LogbookCase.findById(id)
       .populate('student_id', 'firstname_lastname email student_id profile_image year')
-      .populate('preceptor_id', 'firstname_lastname email profile_image workplace')
+      .populate('preceptor_id', 'firstname_lastname email profile_image')
       .populate('location_id', 'Location_name')
       .populate({
         path: 'procedure_id',
@@ -293,7 +317,15 @@ exports.getCaseById = async (req, res) => {
     const isPreceptor = String(logbookCase.preceptor_id._id) === String(req.user.id);
     const isAdmin = req.user.role === 'admin';
 
-    if (!isOwner && !isPreceptor && !isAdmin) {
+    let isCourseInstructor = false;
+    if (req.user.role === 'course_instructor') {
+      const courseId = logbookCase.procedure_id?.course_id?._id || logbookCase.procedure_id?.course_id;
+      if (courseId) {
+        isCourseInstructor = await canManageCourse(req.user, courseId);
+      }
+    }
+
+    if (!isOwner && !isPreceptor && !isAdmin && !isCourseInstructor) {
       return res.status(403).json({ success: false, message: 'คุณไม่มีสิทธิ์ในการดูเคสนี้' });
     }
 
@@ -371,6 +403,15 @@ exports.evaluateCase = async (req, res) => {
         data: null,
         message: 'ไม่พบข้อมูลรายวิชาที่เกี่ยวข้องกับหัตถการนี้',
       });
+    }
+    const activePreceptorAssignment = await CourseAssignment.exists({
+      course_id: course._id,
+      user_id: req.user.id,
+      assignment_role: 'preceptor',
+      status: 'active',
+    });
+    if (!activePreceptorAssignment) {
+      return res.status(403).json({ success: false, data: null, message: 'คุณไม่ได้เป็นพี่เลี้ยงในรายวิชานี้' });
     }
 
     // Validate score against course evaluation type.
@@ -461,7 +502,7 @@ exports.getAllCases = async (req, res) => {
     const total = await LogbookCase.countDocuments();
     const cases = await LogbookCase.find()
       .populate('student_id', 'firstname_lastname email student_id')
-      .populate('preceptor_id', 'firstname_lastname email workplace')
+      .populate('preceptor_id', 'firstname_lastname email')
       .populate('location_id', 'Location_name')
       .populate({
         path: 'procedure_id',

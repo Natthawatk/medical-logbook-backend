@@ -11,7 +11,7 @@ const otpSchema = new Schema(
       trim: true,
     },
     otp_code: {
-      type: String, // hashed
+      type: String, // HMAC-SHA256 hash
       required: true,
     },
     expires_at: {
@@ -22,14 +22,26 @@ const otpSchema = new Schema(
       type: Boolean,
       default: false,
     },
+    attempts: {
+      type: Number,
+      default: 0,
+    },
+    reset_token_hash: {
+      type: String,
+      default: null,
+    },
+    reset_token_expires_at: {
+      type: Date,
+      default: null,
+    },
     created_at: {
       type: Date,
       default: Date.now,
-      expires: 300, // Auto-delete OTP docs 5 minutes after creation
+      expires: 900, // Auto-delete OTP docs 15 minutes after creation
     },
   },
   {
-    timestamps: false,
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
 
