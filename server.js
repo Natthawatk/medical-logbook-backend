@@ -63,7 +63,7 @@ const { mongoUri, dbName, mode: dbMode } = resolveMongoConfig();
 mongoose
   .connect(mongoUri, {
     dbName,
-    maxPoolSize: 10,
+    maxPoolSize: 100,
   })
   .then(() => {
     // eslint-disable-next-line no-console
