@@ -1,9 +1,10 @@
-const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
 const User = require('../models/User');
 const OTP = require('../models/OTP');
-const { JWT_SECRET } = require('../config/environment');
+const { invalidateAuthUserCache } = require('../middlewares/authMiddleware');
+const { notifyAdmins } = require('./notificationController');
+const { signAuthToken, buildSafeAuthUser } = require('../utils/authToken');
 const {
   asString,
   asTrimmedString,
@@ -11,10 +12,25 @@ const {
   hashScopedToken,
 } = require('../middlewares/securityMiddleware');
 
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
-const MAX_FAILED_LOGIN_ATTEMPTS = 5;
-const ACCOUNT_LOCK_DURATION_MS = 15 * 60 * 1000;
 const DUMMY_BCRYPT_HASH = '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
+const SILENT_ALERT_THRESHOLD = 5;
+const FAILED_TRACKER_TTL_MS = 15 * 60 * 1000;
+const failedAttemptTracker = new Map();
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const recordFailedAttempt = (email) => {
+  const now = Date.now();
+  const entry = failedAttemptTracker.get(email);
+  if (!entry || entry.expiresAt <= now) {
+    const fresh = { count: 1, alerted: false, expiresAt: now + FAILED_TRACKER_TTL_MS };
+    failedAttemptTracker.set(email, fresh);
+    return fresh;
+  }
+  entry.count += 1;
+  entry.expiresAt = now + FAILED_TRACKER_TTL_MS;
+  return entry;
+};
 
 exports.login = async (req, res) => {
   try {
@@ -34,24 +50,17 @@ exports.login = async (req, res) => {
     );
 
     if (!user) {
-      // Constant-ish timing mitigation against user enumeration
-      await bcrypt.compare(rawPassword, DUMMY_BCRYPT_HASH);
+      // Constant-ish timing mitigation + progressive delay against user enumeration
+      const attemptInfo = recordFailedAttempt(rawEmail);
+      const delayMs = Math.min(1500, attemptInfo.count * 350);
+      await Promise.all([
+        bcrypt.compare(rawPassword, DUMMY_BCRYPT_HASH),
+        sleep(delayMs),
+      ]);
       return res.status(401).json({
         success: false,
         data: null,
         message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง',
-      });
-    }
-
-    if (user.lock_until && user.lock_until > new Date()) {
-      const remainingMinutes = Math.max(
-        1,
-        Math.ceil((user.lock_until.getTime() - Date.now()) / (60 * 1000))
-      );
-      return res.status(429).json({
-        success: false,
-        data: null,
-        message: `บัญชีถูกล็อกชั่วคราวเนื่องจากใส่รหัสผ่านผิดหลายครั้ง กรุณาลองใหม่ในอีก ${remainingMinutes} นาที`,
       });
     }
 
@@ -60,27 +69,30 @@ exports.login = async (req, res) => {
       : false;
 
     if (!isMatch) {
-      const nextAttempts = (user.failed_login_attempts || 0) + 1;
-      const updatePayload = { failed_login_attempts: nextAttempts };
-      if (nextAttempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
-        updatePayload.lock_until = new Date(Date.now() + ACCOUNT_LOCK_DURATION_MS);
-      }
-      await User.updateOne({ _id: user._id }, { $set: updatePayload });
+      const attemptInfo = recordFailedAttempt(rawEmail);
+      const delayMs = Math.min(1500, attemptInfo.count * 350);
 
-      if (nextAttempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
-        return res.status(429).json({
-          success: false,
-          data: null,
-          message: 'ใส่รหัสผ่านผิดเกินกำหนด บัญชีถูกล็อกชั่วคราว 15 นาที',
-        });
+      if (attemptInfo.count >= SILENT_ALERT_THRESHOLD && !attemptInfo.alerted) {
+        attemptInfo.alerted = true;
+        notifyAdmins({
+          senderId: user._id,
+          type: 'admin_security_alert',
+          severity: 'warning',
+          sendPush: false,
+          actionUrl: '/admin/accounts',
+          message: `พบการใส่รหัสผ่านผิดติดต่อกัน ${attemptInfo.count} ครั้ง สำหรับบัญชี ${user.firstname_lastname || user.email} (${user.email}) ระบบไม่ได้ล็อกบัญชีเพื่อให้ผู้ใช้จริงยังเข้าใช้งานได้`,
+        }).catch(() => {});
       }
 
+      await sleep(delayMs);
       return res.status(401).json({
         success: false,
         data: null,
         message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง',
       });
     }
+
+    failedAttemptTracker.delete(rawEmail);
 
     // Check if account is active
     if (user.academic_status === 'inactive') {
@@ -98,23 +110,9 @@ exports.login = async (req, res) => {
       );
     }
 
-    const token = jwt.sign(
-      {
-        id: user._id,
-        role: user.role,
-        tv: user.token_version || 0,
-      },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN }
-    );
-
-    const safeUser = {
-      id: user._id,
-      email: user.email,
-      role: user.role,
-      firstname_lastname: user.firstname_lastname,
-      student_id: user.student_id,
-    };
+    const rememberMe = req.body?.rememberMe !== false;
+    const token = signAuthToken(user, { rememberMe });
+    const safeUser = buildSafeAuthUser(user);
 
     return res.status(200).json({
       success: true,
@@ -149,12 +147,12 @@ exports.resetPassword = async (req, res) => {
       });
     }
 
-    const passwordError = validatePassword(newPassword);
-    if (passwordError) {
+    const passwordPreError = validatePassword(newPassword, { email: normalizedEmail });
+    if (passwordPreError) {
       return res.status(400).json({
         success: false,
         data: null,
-        message: passwordError,
+        message: passwordPreError,
       });
     }
 
@@ -182,14 +180,47 @@ exports.resetPassword = async (req, res) => {
         message: 'ไม่พบผู้ใช้งาน',
       });
     }
+    if (user.is_shared_account) {
+      return res.status(403).json({
+        success: false,
+        data: null,
+        message: 'บัญชีกลางประจำสถานที่ต้องให้ผู้ดูแลระบบหรืออาจารย์ประจำรายวิชาเป็นผู้รีเซ็ตรหัสผ่าน',
+      });
+    }
+
+    const passwordError = validatePassword(newPassword, {
+      email: user.email,
+      studentId: user.student_id,
+    });
+    if (passwordError) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: passwordError,
+      });
+    }
 
     user.password = newPassword;
+    user.must_change_password = false;
     user.failed_login_attempts = 0;
     user.lock_until = null;
     await user.save();
+    invalidateAuthUserCache(user._id);
 
     // Consume all OTP/reset records for this email so the token cannot be reused.
     await OTP.deleteMany({ email: normalizedEmail });
+
+    if (user.role === 'admin' || user.role === 'course_instructor') {
+      const roleLabel = user.role === 'admin' ? 'แอดมิน' : 'อาจารย์ผู้รับผิดชอบวิชา';
+      await notifyAdmins({
+        senderId: user._id,
+        type: 'admin_security_alert',
+        severity: 'warning',
+        sendPush: true,
+        actionUrl: '/admin/accounts',
+        message: `บัญชี${roleLabel} ${user.firstname_lastname || user.email} (${user.email}) ทำการรีเซ็ตรหัสผ่านสำเร็จ`,
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -203,6 +234,48 @@ exports.resetPassword = async (req, res) => {
       success: false,
       data: null,
       message: 'เกิดข้อผิดพลาดที่ไม่คาดคิดขณะรีเซ็ตรหัสผ่าน',
+    });
+  }
+};
+
+exports.refreshSession = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id)
+      .select('email role firstname_lastname student_id profile_image is_shared_account must_change_password academic_status token_version')
+      .lean();
+
+    if (!user || user.academic_status === 'inactive') {
+      return res.status(401).json({
+        success: false,
+        data: null,
+        message: 'เซสชันไม่สามารถต่ออายุได้',
+      });
+    }
+
+    if (user.is_shared_account || req.authRemember === false) {
+      return res.status(403).json({
+        success: false,
+        data: null,
+        message: 'บัญชีนี้ต้องเข้าสู่ระบบใหม่เมื่อหมดอายุ',
+      });
+    }
+
+    const token = signAuthToken(user, { rememberMe: true });
+    return res.status(200).json({
+      success: true,
+      data: {
+        token,
+        user: buildSafeAuthUser(user),
+      },
+      message: 'ต่ออายุเซสชันสำเร็จ',
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Refresh session error:', err);
+    return res.status(500).json({
+      success: false,
+      data: null,
+      message: 'เกิดข้อผิดพลาดขณะต่ออายุเซสชัน',
     });
   }
 };

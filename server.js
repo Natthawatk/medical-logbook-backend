@@ -5,8 +5,10 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const compression = require('compression');
 const multer = require('multer');
-const { validateEnvironment } = require('./config/environment');
+const { validateEnvironment, resolveMongoConfig } = require('./config/environment');
 const { securityHeaders, sanitizeRequestInputs } = require('./middlewares/securityMiddleware');
+const { startNotificationMonitor } = require('./services/notificationMonitorService');
+const { dashboardCacheAutoInvalidateMiddleware } = require('./services/dashboardCacheService');
 
 validateEnvironment();
 
@@ -30,7 +32,7 @@ const otpRoutes = require('./routes/otpRoutes');
 
 // Middleware
 const rawCorsOrigins = process.env.CORS_ORIGINS || (
-  process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5173,http://localhost'
+  process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5173,http://localhost:5174,http://localhost'
 );
 const allowedOrigins = rawCorsOrigins
   .split(',')
@@ -53,19 +55,20 @@ app.use(cors({
 app.use(compression());
 app.use(express.json({ limit: '1mb' }));
 app.use(sanitizeRequestInputs);
+app.use(dashboardCacheAutoInvalidateMiddleware);
 
 // MongoDB Connection
-const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/medical_logbook';
+const { mongoUri, dbName, mode: dbMode } = resolveMongoConfig();
 
 mongoose
   .connect(mongoUri, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
+    dbName,
     maxPoolSize: 10,
   })
   .then(() => {
     // eslint-disable-next-line no-console
-    console.log('Connected to MongoDB');
+    console.log(`Connected to MongoDB [mode=${dbMode}, db=${mongoose.connection.name}]`);
+    startNotificationMonitor();
   })
   .catch((err) => {
     // eslint-disable-next-line no-console
@@ -77,7 +80,11 @@ mongoose
 app.get('/health', (req, res) => {
   return res.status(200).json({
     success: true,
-    data: { status: 'ok' },
+    data: {
+      status: 'ok',
+      dbMode,
+      dbName: mongoose.connection.name || dbName,
+    },
     message: 'Server is running',
   });
 });

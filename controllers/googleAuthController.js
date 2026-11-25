@@ -1,11 +1,9 @@
 const { OAuth2Client } = require('google-auth-library');
-const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const { JWT_SECRET } = require('../config/environment');
 const { asTrimmedString } = require('../middlewares/securityMiddleware');
+const { signAuthToken, buildSafeAuthUser } = require('../utils/authToken');
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 
 exports.googleLogin = async (req, res) => {
   try {
@@ -67,24 +65,9 @@ exports.googleLogin = async (req, res) => {
       await user.save();
     }
 
-    const token = jwt.sign(
-      {
-        id: user._id,
-        role: user.role,
-        tv: user.token_version || 0,
-      },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN }
-    );
-
-    const safeUser = {
-      id: user._id,
-      email: user.email,
-      role: user.role,
-      firstname_lastname: user.firstname_lastname,
-      student_id: user.student_id,
-      profile_image: user.profile_image,
-    };
+    const rememberMe = req.body?.rememberMe !== false;
+    const token = signAuthToken(user, { rememberMe });
+    const safeUser = buildSafeAuthUser(user);
 
     return res.status(200).json({
       success: true,

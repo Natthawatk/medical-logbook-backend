@@ -1,8 +1,12 @@
 const crypto = require('crypto');
 const { JWT_SECRET } = require('../config/environment');
-
-const MIN_PASSWORD_LENGTH = 8;
-const MAX_PASSWORD_LENGTH = 128;
+const {
+  MIN_PASSWORD_LENGTH,
+  MAX_PASSWORD_LENGTH,
+  validatePassword,
+  generateStrongPassword,
+  resolveInitialPassword,
+} = require('../utils/passwordPolicy');
 
 /**
  * Set baseline HTTP security headers without external dependencies.
@@ -137,10 +141,10 @@ const getEmailKeySuffix = (req) => {
 };
 
 const loginRateLimiter = createRateLimiter({
-  windowMs: 15 * 60 * 1000,
-  max: 15,
+  windowMs: 60 * 1000,
+  max: 20,
   keyGenerator: (req) => `login:${req.ip}:${getEmailKeySuffix(req)}`,
-  message: 'พยายามเข้าสู่ระบบบ่อยเกินไป กรุณารอ 15 นาทีแล้วลองใหม่อีกครั้ง',
+  message: 'ส่งคำขอเข้าสู่ระบบถี่เกินไป กรุณารอประมาณ 1 นาทีแล้วลองใหม่อีกครั้ง',
 });
 
 const otpSendRateLimiter = createRateLimiter({
@@ -195,19 +199,6 @@ const isValidImageUrlOrPath = (value) => {
   }
 };
 
-const validatePassword = (password) => {
-  if (typeof password !== 'string') {
-    return 'รูปแบบรหัสผ่านไม่ถูกต้อง';
-  }
-  if (password.length < MIN_PASSWORD_LENGTH) {
-    return `รหัสผ่านต้องมีความยาวอย่างน้อย ${MIN_PASSWORD_LENGTH} ตัวอักษร`;
-  }
-  if (password.length > MAX_PASSWORD_LENGTH) {
-    return `รหัสผ่านต้องไม่เกิน ${MAX_PASSWORD_LENGTH} ตัวอักษร`;
-  }
-  return null;
-};
-
 const FORMULA_TRIGGER_REGEX = /^[\s\u0000-\u001F]*[=+\-@\t\r]/;
 
 const hasDangerousFormulaPrefix = (value) => {
@@ -260,6 +251,8 @@ module.exports = {
   asTrimmedString,
   isValidImageUrlOrPath,
   validatePassword,
+  generateStrongPassword,
+  resolveInitialPassword,
   hasDangerousFormulaPrefix,
   sanitizeSpreadsheetText,
   stripEmailHeaderChars,

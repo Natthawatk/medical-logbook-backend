@@ -5,7 +5,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon --delay 5 server.js"
+    "start:prod": "node -e \"process.env.NODE_ENV='production'; process.env.DB_MODE='prod'; require('./server.js')\"",
+    "dev": "nodemon --delay 5 server.js",
+    "dev:prod-db": "node -e \"process.env.DB_MODE='prod'; require('./server.js')\"",
+    "db:separate": "node scripts/separateDatabases.js"
   },
   "keywords": [
     "express",
@@ -31,7 +34,8 @@
     "multer": "^2.1.1",
     "nodemailer": "^8.0.3",
     "resend": "^6.12.4",
-    "strip-bom-stream": "^5.0.0"
+    "strip-bom-stream": "^5.0.0",
+    "web-push": "^4.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

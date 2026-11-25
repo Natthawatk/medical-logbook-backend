@@ -8,7 +8,7 @@ const router = express.Router();
 router.get('/', protect, locationController.getLocations);
 router.get('/:id', protect, locationController.getLocationById);
 router.post('/', protect, authorize('admin', 'course_instructor'), locationController.createLocation);
-router.put('/:id', protect, authorize('admin'), locationController.updateLocation);
+router.put('/:id', protect, authorize('admin', 'course_instructor'), locationController.updateLocation);
 router.delete('/:id', protect, authorize('admin'), locationController.deleteLocation);
 
 module.exports = router;

@@ -18,5 +18,6 @@ const courseLocationSchema = new Schema(
 );
 
 courseLocationSchema.index({ course_id: 1, location_id: 1 }, { unique: true });
+courseLocationSchema.index({ course_id: 1, status: 1, location_id: 1 });
 
 module.exports = mongoose.model('CourseLocation', courseLocationSchema);

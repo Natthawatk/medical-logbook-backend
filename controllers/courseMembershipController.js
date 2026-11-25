@@ -7,6 +7,9 @@ const CourseLocation = require('../models/CourseLocation');
 const Procedure = require('../models/Procedure');
 const LogbookCase = require('../models/LogbookCase');
 const { canManageCourse, hasCourseAccess } = require('../services/courseAccessService');
+const { syncCentralPreceptorsForCourse } = require('../services/centralPreceptorService');
+const { createNotification, notifyAdmins, getActorLabel } = require('./notificationController');
+const { invalidateDashboardCache } = require('../services/dashboardCacheService');
 
 const validId = (value) => mongoose.Types.ObjectId.isValid(value);
 
@@ -40,12 +43,19 @@ exports.getCourseContext = async (req, res) => {
       : [];
     const [assignments, locations, legacyLocations, inferredPreceptors, legacyUsers] = await Promise.all([
       CourseAssignment.find({ course_id: course._id, status: 'active' })
-        .populate('user_id', 'email firstname_lastname role student_id year semester phone_number profile_image academic_status')
+        .populate('user_id', 'email firstname_lastname role student_id year semester phone_number profile_image academic_status is_shared_account shared_location_id')
         .sort({ assignment_role: 1, createdAt: 1 }).lean(),
       CourseLocation.find({ course_id: course._id, status: 'active' })
-        .populate('location_id')
+        .populate({
+          path: 'location_id',
+          populate: {
+            path: 'central_preceptor_id',
+            select: 'email firstname_lastname role phone_number profile_image academic_status is_shared_account shared_location_id',
+          },
+        })
         .sort({ createdAt: 1 }),
-      Location.find({ _id: { $in: course.enrolled_locations || [] } }),
+      Location.find({ _id: { $in: course.enrolled_locations || [] } })
+        .populate('central_preceptor_id', 'email firstname_lastname role phone_number profile_image academic_status is_shared_account shared_location_id'),
       User.find({ _id: { $in: inferredPreceptorIds }, role: 'preceptor', academic_status: 'active' })
         .select('email firstname_lastname role student_id phone_number profile_image academic_status')
         .lean(),
@@ -136,6 +146,36 @@ exports.addMember = async (req, res) => {
       await Course.updateOne({ _id: course._id }, { $set: { enrolled_student_count: count } });
     }
 
+    const actorLabel = await getActorLabel(req.user.id);
+    const isHighPrivilegeRole = user.role === 'course_instructor';
+    const roleActionUrl =
+      user.role === 'student'
+        ? '/logbook-cases'
+        : user.role === 'preceptor'
+          ? '/preceptor/dashboard'
+          : '/instructor/dashboard';
+    const roleLabelMap = { student: 'นักศึกษา', preceptor: 'อาจารย์พี่เลี้ยง', course_instructor: 'อาจารย์ผู้รับผิดชอบวิชา' };
+
+    await Promise.all([
+      notifyAdmins({
+        senderId: req.user.id,
+        type: 'admin_course_alert',
+        severity: isHighPrivilegeRole ? 'warning' : 'info',
+        sendPush: isHighPrivilegeRole,
+        actionUrl: '/admin/courses',
+        message: `${actorLabel} เพิ่ม ${user.firstname_lastname} (${roleLabelMap[user.role] || user.role}) เข้ารายวิชา [${course.course_code}] ${course.course_name}`,
+      }),
+      createNotification({
+        recipient_id: user._id,
+        sender_id: req.user.id,
+        type: 'course_membership_changed',
+        severity: 'success',
+        sendPush: true,
+        action_url: roleActionUrl,
+        message: `คุณถูกเพิ่มเข้ารายวิชา [${course.course_code}] ${course.course_name} ในบทบาท${roleLabelMap[user.role] || user.role}`,
+      }),
+    ]);
+    invalidateDashboardCache();
     return res.status(201).json({ success: true, data: assignment, message: 'เพิ่มผู้ใช้เข้ารายวิชาแล้ว' });
   } catch (err) {
     console.error('Add course member error:', err);
@@ -167,6 +207,31 @@ exports.removeMember = async (req, res) => {
       const count = await CourseAssignment.countDocuments({ course_id: course._id, assignment_role: 'student', status: 'active' });
       await Course.updateOne({ _id: course._id }, { $set: { enrolled_student_count: count } });
     }
+    const [actorLabel, removedUser] = await Promise.all([
+      getActorLabel(req.user.id),
+      User.findById(userId).select('firstname_lastname').lean(),
+    ]);
+    const removedInstructor = assignment.assignment_role === 'course_instructor';
+    await Promise.all([
+      notifyAdmins({
+        senderId: req.user.id,
+        type: 'admin_course_alert',
+        severity: 'warning',
+        sendPush: removedInstructor,
+        actionUrl: '/admin/courses',
+        message: `${actorLabel} นำ ${removedUser?.firstname_lastname || 'สมาชิก'} ออกจากรายวิชา [${course.course_code}] ${course.course_name}`,
+      }),
+      createNotification({
+        recipient_id: userId,
+        sender_id: req.user.id,
+        type: 'course_membership_changed',
+        severity: 'warning',
+        sendPush: true,
+        action_url: '/notifications',
+        message: `คุณถูกนำออกจากรายวิชา [${course.course_code}] ${course.course_name} แล้ว`,
+      }),
+    ]);
+    invalidateDashboardCache();
     return res.json({ success: true, data: assignment, message: 'นำผู้ใช้ออกจากรายวิชาแล้ว โดยไม่ได้ลบบัญชี' });
   } catch (err) {
     console.error('Remove course member error:', err);
@@ -188,6 +253,20 @@ exports.addLocation = async (req, res) => {
       { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
     );
     await Course.updateOne({ _id: course._id }, { $addToSet: { enrolled_locations: location_id } });
+    await syncCentralPreceptorsForCourse(course._id, [location_id], req.user.id);
+    const [actorLabel, loc] = await Promise.all([
+      getActorLabel(req.user.id),
+      Location.findById(location_id).select('Location_name').lean(),
+    ]);
+    await notifyAdmins({
+      senderId: req.user.id,
+      type: 'admin_course_alert',
+      severity: 'info',
+      sendPush: false,
+      actionUrl: '/admin/courses',
+      message: `${actorLabel} เพิ่มสถานที่ "${loc?.Location_name || 'สถานที่'}" ในรายวิชา [${course.course_code}] ${course.course_name}`,
+    });
+    invalidateDashboardCache();
     return res.status(201).json({ success: true, data: link, message: 'เพิ่มสถานที่ในรายวิชาแล้ว' });
   } catch (err) {
     console.error('Add course location error:', err);
@@ -208,6 +287,19 @@ exports.removeLocation = async (req, res) => {
     );
     if (!link) return res.status(404).json({ success: false, data: null, message: 'Active course location not found.' });
     await Course.updateOne({ _id: course._id }, { $pull: { enrolled_locations: locationId } });
+    const [actorLabel, loc] = await Promise.all([
+      getActorLabel(req.user.id),
+      Location.findById(locationId).select('Location_name').lean(),
+    ]);
+    await notifyAdmins({
+      senderId: req.user.id,
+      type: 'admin_course_alert',
+      severity: 'warning',
+      sendPush: false,
+      actionUrl: '/admin/courses',
+      message: `${actorLabel} นำสถานที่ "${loc?.Location_name || 'สถานที่'}" ออกจากรายวิชา [${course.course_code}] ${course.course_name}`,
+    });
+    invalidateDashboardCache();
     return res.json({ success: true, data: link, message: 'นำสถานที่ออกจากรายวิชาแล้ว' });
   } catch (err) {
     console.error('Remove course location error:', err);

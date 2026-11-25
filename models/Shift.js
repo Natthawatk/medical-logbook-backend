@@ -31,6 +31,21 @@ const shiftSchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: 'User',
     },
+    on_site_verifier_name: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    on_site_verifier_position: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    on_site_verifier_phone: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     shift_date: {
       type: Date,
       required: true,
@@ -62,5 +77,13 @@ const shiftSchema = new Schema(
   }
 );
 
-module.exports = mongoose.model('Shift', shiftSchema);
+shiftSchema.index({ preceptor_id: 1, shift_date: -1, createdAt: -1 });
+shiftSchema.index({ preceptor_id: 1, verify_status: 1, createdAt: -1 });
+shiftSchema.index({ preceptor_id: 1, course_id: 1, verify_status: 1 });
+shiftSchema.index({ student_id: 1, shift_date: -1, createdAt: -1 });
+shiftSchema.index({ student_id: 1, verify_status: 1, shift_status: 1 });
+shiftSchema.index({ student_id: 1, course_id: 1, verify_status: 1 });
+shiftSchema.index({ course_id: 1, student_id: 1, verify_status: 1 });
+shiftSchema.index({ location_id: 1, verify_status: 1 });
 
+module.exports = mongoose.model('Shift', shiftSchema);

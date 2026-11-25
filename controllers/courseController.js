@@ -5,6 +5,9 @@ const User = require('../models/User');
 const CourseAssignment = require('../models/CourseAssignment');
 const CourseLocation = require('../models/CourseLocation');
 const { getAccessibleCourseIds, hasCourseAccess, canManageCourse } = require('../services/courseAccessService');
+const { syncCentralPreceptorsForCourse } = require('../services/centralPreceptorService');
+const { createNotification, notifyAdmins, getActorLabel } = require('./notificationController');
+const { invalidateDashboardCache } = require('../services/dashboardCacheService');
 
 const ALLOWED_EVALUATION_TYPES = ['Pass/Fail', '0-4'];
 
@@ -341,6 +344,7 @@ exports.createCourse = async (req, res) => {
           { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
         )
       ));
+      await syncCentralPreceptorsForCourse(created._id, normalizedLocations, req.user.id);
     }
 
     const proceduresToInsert = [
@@ -367,6 +371,17 @@ exports.createCourse = async (req, res) => {
       );
     }
 
+    const actorLabel = await getActorLabel(req.user.id);
+    await notifyAdmins({
+      senderId: req.user.id,
+      type: 'admin_course_alert',
+      severity: 'success',
+      sendPush: true,
+      actionUrl: '/admin/courses',
+      message: `${actorLabel} เพิ่มรายวิชา [${created.course_code}] ${created.course_name}`,
+    });
+
+    invalidateDashboardCache();
     return res.status(201).json({
       success: true,
       data: created,
@@ -524,6 +539,15 @@ exports.updateCourse = async (req, res) => {
       });
     }
 
+    const prevCourse = {
+      course_code: course.course_code,
+      course_name: course.course_name,
+      semester: course.semester,
+      year: course.year,
+      evaluation_type: course.evaluation_type,
+      is_archived: course.is_archived,
+    };
+
     const {
       course_code,
       course_name,
@@ -647,6 +671,10 @@ exports.updateCourse = async (req, res) => {
       const cleanEnrolledStudents = normalizedEnrolledStudents.filter((studentId) =>
         validStudentSet.has(studentId)
       );
+      const cleanStudentSet = new Set(cleanEnrolledStudents);
+      const addedStudentIds = cleanEnrolledStudents.filter((sid) => !previousStudentSet.has(sid));
+      const removedStudentIds = [...previousStudentSet].filter((sid) => !cleanStudentSet.has(sid));
+      req._courseStudentMembershipDiff = { addedStudentIds, removedStudentIds };
 
       course.enrolled_students = cleanEnrolledStudents;
       course.enrolled_student_count = cleanEnrolledStudents.length;
@@ -691,9 +719,63 @@ exports.updateCourse = async (req, res) => {
           { $set: { status: 'inactive' } }
         ),
       ]);
+      await syncCentralPreceptorsForCourse(course._id, enrolled_locations, req.user.id);
     }
 
     await course.save();
+    invalidateDashboardCache();
+
+    const courseChanges = [];
+    if (is_archived !== undefined && is_archived !== prevCourse.is_archived) {
+      courseChanges.push(is_archived ? 'ย้ายรายวิชาเข้าคลัง' : 'นำรายวิชาออกจากคลัง');
+    }
+    if (course_code !== undefined && course_code !== prevCourse.course_code) courseChanges.push(`เปลี่ยนรหัสเป็น ${course_code}`);
+    if (course_name !== undefined && course_name !== prevCourse.course_name) courseChanges.push(`เปลี่ยนชื่อเป็น "${course_name}"`);
+    if (semester !== undefined && semester !== prevCourse.semester) courseChanges.push(`เปลี่ยนเทอมเป็น ${semester}`);
+    if (year !== undefined && Number(year) !== Number(prevCourse.year)) courseChanges.push(`เปลี่ยนปีการศึกษาเป็น ${year}`);
+    if (evaluation_type !== undefined && evaluation_type !== prevCourse.evaluation_type) courseChanges.push(`เปลี่ยนเกณฑ์ประเมินเป็น ${evaluation_type}`);
+    if (Array.isArray(normalizedEnrolledStudents)) courseChanges.push('ปรับรายชื่อนักศึกษา');
+    if (Array.isArray(enrolled_locations)) courseChanges.push('ปรับสถานที่ปฏิบัติงาน');
+    const courseSummary = courseChanges.length > 0 ? ` (${courseChanges.join(', ')})` : '';
+    const archivedNow = is_archived === true && prevCourse.is_archived !== true;
+    const actorLabel = await getActorLabel(req.user.id);
+    await notifyAdmins({
+      senderId: req.user.id,
+      type: 'admin_course_alert',
+      severity: archivedNow ? 'warning' : 'info',
+      sendPush: archivedNow,
+      actionUrl: '/admin/courses',
+      message: `${actorLabel} แก้ไขรายวิชา [${course.course_code}] ${course.course_name}${courseSummary}`,
+    });
+
+    const membershipDiff = req._courseStudentMembershipDiff;
+    if (membershipDiff) {
+      const courseLabel = `[${course.course_code}] ${course.course_name}`;
+      await Promise.all([
+        ...membershipDiff.addedStudentIds.map((sid) =>
+          createNotification({
+            recipient_id: sid,
+            sender_id: req.user.id,
+            type: 'course_membership_changed',
+            severity: 'success',
+            sendPush: true,
+            action_url: '/logbook-cases',
+            message: `คุณถูกเพิ่มเข้ารายวิชา ${courseLabel} แล้ว`,
+          })
+        ),
+        ...membershipDiff.removedStudentIds.map((sid) =>
+          createNotification({
+            recipient_id: sid,
+            sender_id: req.user.id,
+            type: 'course_membership_changed',
+            severity: 'warning',
+            sendPush: true,
+            action_url: '/notifications',
+            message: `คุณถูกนำออกจากรายวิชา ${courseLabel} แล้ว`,
+          })
+        ),
+      ]);
+    }
 
     return res.status(200).json({
       success: true,
@@ -743,6 +825,17 @@ exports.deleteCourse = async (req, res) => {
         message: 'Course not found.',
       });
     }
+    invalidateDashboardCache();
+
+    const actorLabel = await getActorLabel(req.user.id);
+    await notifyAdmins({
+      senderId: req.user.id,
+      type: 'admin_course_alert',
+      severity: 'danger',
+      sendPush: true,
+      actionUrl: '/admin/courses',
+      message: `${actorLabel} ลบรายวิชา [${deleted.course_code}] ${deleted.course_name}`,
+    });
 
     return res.status(200).json({
       success: true,
@@ -869,6 +962,19 @@ exports.rolloverCourses = async (req, res) => {
       );
     }
 
+    if (createdCourses.length > 0) {
+      const actorLabel = await getActorLabel(req.user.id);
+      await notifyAdmins({
+        senderId: req.user.id,
+        type: 'admin_course_alert',
+        severity: 'success',
+        sendPush: true,
+        actionUrl: '/admin/courses',
+        message: `${actorLabel} คัดลอกรายวิชาข้ามเทอม (${from_semester}/${from_year} → ${to_semester}/${to_year}) จำนวน ${createdCourses.length} รายวิชา`,
+      });
+    }
+
+    invalidateDashboardCache();
     return res.status(201).json({
       success: true,
       data: {

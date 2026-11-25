@@ -12,5 +12,7 @@ router.get('/my', authorize('student'), shiftController.getMyShifts);
 router.get('/preceptor/shifts', authorize('preceptor'), shiftController.getPreceptorShifts);
 router.get('/user/:id', authorize('admin', 'course_instructor'), shiftController.getUserShifts);
 router.put('/:id/verify', authorize('admin', 'preceptor'), shiftController.verifyShift);
+router.put('/:id', authorize('admin'), shiftController.updateShiftByAdmin);
+router.delete('/:id', authorize('admin'), shiftController.deleteShiftByAdmin);
 
 module.exports = router;

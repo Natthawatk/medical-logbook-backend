@@ -29,6 +29,8 @@ courseAssignmentSchema.index(
   { course_id: 1, user_id: 1, assignment_role: 1 },
   { unique: true }
 );
+courseAssignmentSchema.index({ user_id: 1, status: 1, assignment_role: 1, course_id: 1 });
+courseAssignmentSchema.index({ course_id: 1, status: 1, assignment_role: 1, user_id: 1 });
 
 courseAssignmentSchema.pre('validate', async function validateRole() {
   if (!this.user_id || !this.assignment_role) return;

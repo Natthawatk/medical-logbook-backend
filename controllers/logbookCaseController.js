@@ -6,14 +6,44 @@ const User = require('../models/User');
 const Notification = require('../models/Notification');
 const CourseAssignment = require('../models/CourseAssignment');
 const CourseLocation = require('../models/CourseLocation');
-const { createNotification } = require('./notificationController');
+const Location = require('../models/Location');
+const { createNotification, notifyCourseInstructors } = require('./notificationController');
+const { getCompletedStudentSetForProcedures, notifyCourseCompletionForStudents } = require('../services/courseCompletionService');
 const { canManageCourse } = require('../services/courseAccessService');
+const { normalizeVerifierText, upsertLocationVerifier } = require('../services/centralPreceptorService');
+const { invalidateDashboardCache } = require('../services/dashboardCacheService');
 
 const ALLOWED_EVALUATION_STATUS = ['approved', 'rejected'];
 
+const validateRequiredCaseFields = (procedure, caseData) => {
+  const requiredFields = Array.isArray(procedure?.form_structure)
+    ? procedure.form_structure.filter((field) => field && field.is_required)
+    : [];
+  if (requiredFields.length === 0) return null;
+  const missingFields = requiredFields
+    .filter((field) => {
+      const val = caseData && typeof caseData === 'object' ? caseData[field.field_name] : undefined;
+      return val === undefined || val === null || String(val).trim() === '';
+    })
+    .map((field) => field.field_name);
+  if (missingFields.length > 0) {
+    return `กรุณากรอกข้อมูลที่จำเป็นให้ครบถ้วน: ${missingFields.join(', ')}`;
+  }
+  return null;
+};
+
 exports.createCase = async (req, res) => {
   try {
-    const { procedure_id, preceptor_id, location_id, case_data, case_date } = req.body || {};
+    const {
+      procedure_id,
+      preceptor_id,
+      location_id,
+      case_data,
+      case_date,
+      on_site_verifier_name,
+      on_site_verifier_position,
+      on_site_verifier_phone,
+    } = req.body || {};
 
     if (!procedure_id || !preceptor_id || !location_id || !case_data) {
       return res.status(400).json({
@@ -35,17 +65,35 @@ exports.createCase = async (req, res) => {
       });
     }
 
-    const [procedure, preceptor, student] = await Promise.all([
+    const [procedure, preceptor, student, location] = await Promise.all([
       Procedure.findById(procedure_id),
       User.findById(preceptor_id),
       User.findById(req.user.id),
+      Location.findById(location_id),
     ]);
+
+    if (!location) {
+      return res.status(404).json({
+        success: false,
+        data: null,
+        message: 'ไม่พบข้อมูลสถานที่ปฏิบัติงาน',
+      });
+    }
 
     if (!procedure) {
       return res.status(404).json({
         success: false,
         data: null,
         message: 'ไม่พบข้อมูลหัตถการ',
+      });
+    }
+
+    const missingError = validateRequiredCaseFields(procedure, case_data);
+    if (missingError) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: missingError,
       });
     }
 
@@ -57,16 +105,8 @@ exports.createCase = async (req, res) => {
       });
     }
 
-    // Validation: Prevent graduated students from creating new records
-    if (req.user.academic_status === 'graduated') {
-      return res.status(403).json({
-        success: false,
-        data: null,
-        message: 'ไม่สามารถส่งเคสใหม่ได้ เนื่องจากคุณสำเร็จการศึกษาแล้ว',
-      });
-    }
 
-    const [studentAssignment, preceptorAssignment, courseLocation] = await Promise.all([
+    const [studentAssignment, preceptorAssignment, courseLocation, legacyCourseLocation] = await Promise.all([
       CourseAssignment.exists({
         course_id: procedure.course_id,
         user_id: req.user.id,
@@ -84,6 +124,10 @@ exports.createCase = async (req, res) => {
         location_id,
         status: 'active',
       }),
+      Course.exists({
+        _id: procedure.course_id,
+        enrolled_locations: location_id,
+      }),
     ]);
 
     if (!studentAssignment) {
@@ -93,11 +137,35 @@ exports.createCase = async (req, res) => {
         message: 'คุณไม่ได้ลงทะเบียนในรายวิชาที่เกี่ยวข้องกับหัตถการนี้ จึงไม่สามารถบันทึกเคสได้',
       });
     }
-    if (!preceptorAssignment) {
-      return res.status(400).json({ success: false, data: null, message: 'พี่เลี้ยงไม่ได้อยู่ในรายวิชานี้' });
-    }
-    if (!courseLocation) {
+    if (!courseLocation && !legacyCourseLocation) {
       return res.status(400).json({ success: false, data: null, message: 'สถานที่ไม่ได้อยู่ในรายวิชานี้' });
+    }
+    const isCentralForLocation = String(location.central_preceptor_id || '') === String(preceptor_id);
+    if (preceptor.is_shared_account && !isCentralForLocation) {
+      return res.status(400).json({ success: false, data: null, message: 'บัญชีกลางที่เลือกไม่ได้ผูกกับสถานที่ปฏิบัติงานนี้' });
+    }
+    if (!preceptorAssignment) {
+      if (isCentralForLocation) {
+        await CourseAssignment.findOneAndUpdate(
+          { course_id: procedure.course_id, user_id: preceptor_id, assignment_role: 'preceptor' },
+          { $set: { status: 'active', revoked_at: null, assigned_at: new Date() } },
+          { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
+        );
+      } else {
+        return res.status(400).json({ success: false, data: null, message: 'พี่เลี้ยงไม่ได้อยู่ในรายวิชานี้' });
+      }
+    }
+
+    const verifierName = normalizeVerifierText(on_site_verifier_name);
+    const verifierPosition = normalizeVerifierText(on_site_verifier_position);
+    const verifierPhone = normalizeVerifierText(on_site_verifier_phone);
+
+    if (isCentralForLocation && !verifierName) {
+      return res.status(400).json({
+        success: false,
+        data: null,
+        message: 'กรุณาเลือกหรือกรอกชื่อผู้ยืนยันหน้างานเมื่อใช้บัญชีกลางประจำสถานที่',
+      });
     }
 
     const createdCase = await LogbookCase.create({
@@ -105,10 +173,23 @@ exports.createCase = async (req, res) => {
       procedure_id,
       preceptor_id,
       location_id,
+      on_site_verifier_name: isCentralForLocation ? verifierName : '',
+      on_site_verifier_position: isCentralForLocation ? verifierPosition : '',
+      on_site_verifier_phone: isCentralForLocation ? verifierPhone : '',
       case_data,
       case_date,
       evaluation_status: 'pending',
     });
+    invalidateDashboardCache();
+
+    if (isCentralForLocation && verifierName) {
+      await upsertLocationVerifier(location, {
+        name: verifierName,
+        position: verifierPosition,
+        phone: verifierPhone,
+        createdBy: req.user.id,
+      });
+    }
 
     // Calculate progress (e.g., 2/10) - นับรวมทั้งที่ผ่านแล้วและที่รอประเมินเพื่อหาลำดับล่าสุด
     const recordedCount = await LogbookCase.countDocuments({
@@ -120,13 +201,20 @@ exports.createCase = async (req, res) => {
     const totalTarget = procedure.required_cases || procedure.target_score || 1;
     const progressString = `(${recordedCount}/${totalTarget})`;
 
+    const submitter = await User.findById(req.user.id).select('firstname_lastname student_id').lean();
+    const submitterLabel = submitter
+      ? `${submitter.firstname_lastname || 'นักศึกษา'}${submitter.student_id ? ` (${submitter.student_id})` : ''}`
+      : 'นักศึกษา';
+
+    const verifierSuffix = isCentralForLocation && verifierName ? ` (ผู้ยืนยันหน้างาน: ${verifierName})` : '';
+
     // 1. Notify the Preceptor
     await createNotification({
       recipient_id: preceptor_id,
       sender_id: req.user.id,
       target_id: createdCase._id,
       type: 'case_submitted',
-      message: `มีเคสใหม่สำหรับ ${procedure.procedure_name} ${progressString} รอการประเมินจากคุณ`,
+      message: `นักศึกษา ${submitterLabel} ส่งเคสใหม่สำหรับ ${procedure.procedure_name} ${progressString}${verifierSuffix} รอการประเมินจากคุณ`,
     });
 
     // 2. Notify the Student (Confirmation)
@@ -167,7 +255,8 @@ exports.getMyCases = async (req, res) => {
       .populate('location_id', 'Location_name')
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean();
 
     return res.status(200).json({
       success: true,
@@ -209,7 +298,8 @@ exports.getPendingCases = async (req, res) => {
       .populate('location_id', 'Location_name')
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean();
 
     return res.status(200).json({
       success: true,
@@ -248,31 +338,62 @@ exports.getCasesForPreceptor = async (req, res) => {
       .populate('location_id', 'Location_name')
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean();
 
-    const casesWithProgress = await Promise.all(
-      cases.map(async (c) => {
-        if (!c.student_id || !c.procedure_id) {
-          return {
-            ...c.toObject(),
-            progress: '0/1',
-          };
-        }
+    const uniquePairs = [];
+    const seenPairs = new Set();
+    for (const c of cases) {
+      if (!c.student_id || !c.procedure_id) continue;
+      const key = `${c.student_id._id}:${c.procedure_id._id}`;
+      if (seenPairs.has(key)) continue;
+      seenPairs.add(key);
+      uniquePairs.push({
+        student_id: c.student_id._id,
+        procedure_id: c.procedure_id._id,
+      });
+    }
 
-        const recordedCount = await LogbookCase.countDocuments({
-          student_id: c.student_id._id,
-          procedure_id: c.procedure_id._id,
-          evaluation_status: { $in: ['approved', 'pending'] },
-        });
+    const progressCountMap = new Map();
+    if (uniquePairs.length > 0) {
+      const groupedCounts = await LogbookCase.aggregate([
+        {
+          $match: {
+            $or: uniquePairs,
+            evaluation_status: { $in: ['approved', 'pending'] },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              student_id: '$student_id',
+              procedure_id: '$procedure_id',
+            },
+            count: { $sum: 1 },
+          },
+        },
+      ]);
+      for (const row of groupedCounts) {
+        const key = `${row._id.student_id}:${row._id.procedure_id}`;
+        progressCountMap.set(key, row.count);
+      }
+    }
 
-        const target = c.procedure_id.required_cases || c.procedure_id.target_score || 1;
-
+    const casesWithProgress = cases.map((c) => {
+      if (!c.student_id || !c.procedure_id) {
         return {
-          ...c.toObject(),
-          progress: `${recordedCount}/${target}`,
+          ...c,
+          progress: '0/1',
         };
-      })
-    );
+      }
+      const key = `${c.student_id._id}:${c.procedure_id._id}`;
+      const recordedCount = progressCountMap.get(key) || 0;
+      const target = c.procedure_id.required_cases || c.procedure_id.target_score || 1;
+      return {
+        ...c,
+        progress: `${recordedCount}/${target}`,
+      };
+    });
 
     return res.status(200).json({
       success: true,
@@ -451,12 +572,14 @@ exports.evaluateCase = async (req, res) => {
       });
     }
 
+    const previousEvaluationStatus = logbookCase.evaluation_status;
     logbookCase.evaluation_status = normalizedStatus;
     logbookCase.evaluation_result = evaluation_result;
     if (feedback !== undefined) logbookCase.feedback = feedback;
     logbookCase.evaluated_at = new Date();
 
     await logbookCase.save();
+    invalidateDashboardCache();
 
     // Mark related incoming notifications as read for the current preceptor.
     await Notification.updateMany(
@@ -476,6 +599,62 @@ exports.evaluateCase = async (req, res) => {
       type: 'case_evaluated',
       message: `เคสหัตถการของคุณได้รับการ${normalizedStatus === 'approved' ? 'อนุมัติ' : 'ปฏิเสธ'}แล้ว`,
     });
+
+    if (normalizedStatus === 'rejected' || Number(evaluation_result) <= 0) {
+      const student = await User.findById(logbookCase.student_id).select('firstname_lastname student_id').lean();
+      const studentLabel = student
+        ? `${student.firstname_lastname || 'นักศึกษา'}${student.student_id ? ` (${student.student_id})` : ''}`
+        : 'นักศึกษา';
+      const courseCodeLabel = course?.course_code ? ` [${course.course_code}]` : '';
+      const procedureLabel = procedure?.procedure_name || 'หัตถการ';
+      const failedCourseId = course?._id || logbookCase.course_id;
+
+      if (failedCourseId) {
+        await notifyCourseInstructors({
+          courseId: failedCourseId,
+          senderId: req.user.id,
+          targetId: logbookCase._id,
+          type: 'instructor_case_failed',
+          severity: 'danger',
+          actionUrl: `/logbook-cases/${logbookCase._id}`,
+          message: `${studentLabel} ไม่ผ่านการประเมินเคส "${procedureLabel}"${courseCodeLabel}`,
+        });
+      }
+    }
+
+    if (normalizedStatus === 'approved' && previousEvaluationStatus !== 'approved') {
+      const targetCourseId = course?._id || logbookCase.course_id;
+      if (targetCourseId) {
+        const courseProcedures = await Procedure.find({ course_id: targetCourseId })
+          .select('_id procedure_name required_cases target_score')
+          .lean();
+
+        if (courseProcedures.length > 0) {
+          const studentIdStr = String(logbookCase.student_id);
+          const completedSet = await getCompletedStudentSetForProcedures(courseProcedures, [studentIdStr]);
+          if (completedSet.has(studentIdStr)) {
+            const currentReq = Number(procedure.required_cases || procedure.target_score || 1);
+            const approvedForCurrent = await LogbookCase.countDocuments({
+              student_id: logbookCase.student_id,
+              procedure_id: procedure._id,
+              evaluation_status: 'approved',
+            });
+            const justReachedCurrent = Math.max(0, approvedForCurrent - 1) < currentReq && approvedForCurrent >= currentReq;
+            if (justReachedCurrent) {
+              await notifyCourseCompletionForStudents({
+                studentIds: [studentIdStr],
+                courseId: targetCourseId,
+                courseDoc: course,
+                senderId: req.user.id,
+                targetId: logbookCase._id,
+                procedures: courseProcedures,
+                reasonLabel: `ปิดท้ายด้วย "${procedure?.procedure_name || 'หัตถการ'}"`,
+              });
+            }
+          }
+        }
+      }
+    }
 
     return res.status(200).json({
       success: true,
@@ -531,5 +710,205 @@ exports.getAllCases = async (req, res) => {
       data: null,
       message: 'เกิดข้อผิดพลาดที่ไม่คาดคิดขณะดึงข้อมูลเคสทั้งหมด',
     });
+  }
+};
+
+exports.updateCaseByAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, data: null, message: 'รหัสเคสไม่ถูกต้อง' });
+    }
+
+    const logbookCase = await LogbookCase.findById(id);
+    if (!logbookCase) {
+      return res.status(404).json({ success: false, data: null, message: 'ไม่พบข้อมูลเคส' });
+    }
+
+    const procedure = await Procedure.findById(logbookCase.procedure_id);
+    if (!procedure) {
+      return res.status(404).json({ success: false, data: null, message: 'ไม่พบข้อมูลหัตถการของเคสนี้' });
+    }
+    const course = await Course.findById(procedure.course_id);
+    if (!course) {
+      return res.status(404).json({ success: false, data: null, message: 'ไม่พบข้อมูลรายวิชาของเคสนี้' });
+    }
+
+    const {
+      location_id,
+      preceptor_id,
+      case_date,
+      case_data,
+      evaluation_status,
+      evaluation_result,
+      feedback,
+    } = req.body || {};
+
+    if (location_id !== undefined) {
+      if (!mongoose.Types.ObjectId.isValid(location_id)) {
+        return res.status(400).json({ success: false, data: null, message: 'รหัสสถานที่ไม่ถูกต้อง' });
+      }
+      const courseLocation = await CourseLocation.exists({
+        course_id: course._id,
+        location_id,
+        status: 'active',
+      });
+      if (!courseLocation) {
+        return res.status(400).json({ success: false, data: null, message: 'สถานที่ที่เลือกไม่ได้อยู่ในรายวิชานี้' });
+      }
+      logbookCase.location_id = location_id;
+    }
+
+    if (preceptor_id !== undefined) {
+      if (!mongoose.Types.ObjectId.isValid(preceptor_id)) {
+        return res.status(400).json({ success: false, data: null, message: 'รหัสอาจารย์พี่เลี้ยงไม่ถูกต้อง' });
+      }
+      const preceptorAssignment = await CourseAssignment.exists({
+        course_id: course._id,
+        user_id: preceptor_id,
+        assignment_role: 'preceptor',
+        status: 'active',
+      });
+      if (!preceptorAssignment) {
+        return res.status(400).json({ success: false, data: null, message: 'อาจารย์พี่เลี้ยงที่เลือกไม่ได้อยู่ในรายวิชานี้' });
+      }
+      logbookCase.preceptor_id = preceptor_id;
+    }
+
+    if (case_date !== undefined) {
+      const parsedDate = new Date(case_date);
+      if (Number.isNaN(parsedDate.getTime())) {
+        return res.status(400).json({ success: false, data: null, message: 'วันเวลาที่ทำหัตถการไม่ถูกต้อง' });
+      }
+      logbookCase.case_date = parsedDate;
+    }
+
+    if (case_data !== undefined) {
+      if (!case_data || typeof case_data !== 'object' || Array.isArray(case_data)) {
+        return res.status(400).json({ success: false, data: null, message: 'รูปแบบข้อมูลรายละเอียดเคสไม่ถูกต้อง' });
+      }
+      const mergedCaseData = { ...(logbookCase.case_data || {}), ...case_data };
+      const missingError = validateRequiredCaseFields(procedure, mergedCaseData);
+      if (missingError) {
+        return res.status(400).json({ success: false, data: null, message: missingError });
+      }
+      logbookCase.case_data = mergedCaseData;
+      logbookCase.markModified('case_data');
+    }
+
+    const previousStatus = logbookCase.evaluation_status;
+    if (evaluation_status !== undefined) {
+      const normalizedStatus = String(evaluation_status).toLowerCase();
+      if (!['pending', 'approved', 'rejected'].includes(normalizedStatus)) {
+        return res.status(400).json({ success: false, data: null, message: 'สถานะการประเมินไม่ถูกต้อง' });
+      }
+      if (normalizedStatus === 'pending') {
+        logbookCase.evaluation_status = 'pending';
+        logbookCase.evaluation_result = undefined;
+        logbookCase.evaluated_at = undefined;
+      } else {
+        const numericScore = Number(evaluation_result);
+        if (course.evaluation_type === 'Pass/Fail') {
+          if (!Number.isFinite(numericScore) || ![0, 1].includes(numericScore)) {
+            return res.status(400).json({
+              success: false,
+              data: null,
+              message: "สำหรับวิชาแบบ 'Pass/Fail' ผลการประเมินต้องเป็น 0 (ไม่ผ่าน) หรือ 1 (ผ่าน)",
+            });
+          }
+        } else if (!Number.isFinite(numericScore) || numericScore < 0 || numericScore > 4) {
+          return res.status(400).json({
+            success: false,
+            data: null,
+            message: "สำหรับวิชาแบบ '0-4' ผลการประเมินต้องอยู่ระหว่าง 0 ถึง 4",
+          });
+        }
+        logbookCase.evaluation_status = normalizedStatus;
+        logbookCase.evaluation_result = numericScore;
+        if (!logbookCase.evaluated_at || previousStatus !== normalizedStatus) {
+          logbookCase.evaluated_at = new Date();
+        }
+      }
+    }
+
+    if (feedback !== undefined) {
+      logbookCase.feedback = feedback;
+    }
+
+    await logbookCase.save();
+    invalidateDashboardCache();
+
+    if (logbookCase.evaluation_status === 'approved' && previousStatus !== 'approved') {
+      const courseProcedures = await Procedure.find({ course_id: course._id })
+        .select('_id procedure_name required_cases target_score')
+        .lean();
+      if (courseProcedures.length > 0) {
+        const studentIdStr = String(logbookCase.student_id);
+        const completedSet = await getCompletedStudentSetForProcedures(courseProcedures, [studentIdStr]);
+        if (completedSet.has(studentIdStr)) {
+          const currentReq = Number(procedure.required_cases || procedure.target_score || 1);
+          const approvedForCurrent = await LogbookCase.countDocuments({
+            student_id: logbookCase.student_id,
+            procedure_id: procedure._id,
+            evaluation_status: 'approved',
+          });
+          if (Math.max(0, approvedForCurrent - 1) < currentReq && approvedForCurrent >= currentReq) {
+            await notifyCourseCompletionForStudents({
+              studentIds: [studentIdStr],
+              courseId: course._id,
+              courseDoc: course,
+              senderId: req.user.id,
+              targetId: logbookCase._id,
+              procedures: courseProcedures,
+              reasonLabel: `ปิดท้ายด้วย "${procedure.procedure_name}"`,
+            });
+          }
+        }
+      }
+    }
+
+    const updated = await LogbookCase.findById(logbookCase._id)
+      .populate('student_id', 'firstname_lastname email student_id profile_image year')
+      .populate('preceptor_id', 'firstname_lastname email profile_image')
+      .populate('location_id', 'Location_name')
+      .populate({
+        path: 'procedure_id',
+        populate: { path: 'course_id', model: 'Course' },
+      });
+
+    return res.status(200).json({
+      success: true,
+      data: updated,
+      message: 'อัปเดตข้อมูลเคสเรียบร้อยแล้ว',
+    });
+  } catch (err) {
+    console.error('Admin update case error:', err);
+    return res.status(500).json({ success: false, data: null, message: 'เกิดข้อผิดพลาดขณะอัปเดตข้อมูลเคส' });
+  }
+};
+
+exports.deleteCaseByAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, data: null, message: 'รหัสเคสไม่ถูกต้อง' });
+    }
+
+    const deleted = await LogbookCase.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, data: null, message: 'ไม่พบข้อมูลเคส' });
+    }
+    invalidateDashboardCache();
+
+    await Notification.deleteMany({ target_id: id });
+
+    return res.status(200).json({
+      success: true,
+      data: null,
+      message: 'ลบข้อมูลบันทึกเคสเรียบร้อยแล้ว',
+    });
+  } catch (err) {
+    console.error('Admin delete case error:', err);
+    return res.status(500).json({ success: false, data: null, message: 'เกิดข้อผิดพลาดขณะลบข้อมูลเคส' });
   }
 };

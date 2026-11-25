@@ -33,5 +33,9 @@ router.get('/:id', logbookCaseController.getCaseById);
 // Preceptor action: Evaluate a specific case
 router.put('/:id/evaluate', authorize('preceptor'), logbookCaseController.evaluateCase);
 
+// Admin actions: Edit or delete a specific case
+router.put('/:id', authorize('admin'), logbookCaseController.updateCaseByAdmin);
+router.delete('/:id', authorize('admin'), logbookCaseController.deleteCaseByAdmin);
+
 
 module.exports = router;

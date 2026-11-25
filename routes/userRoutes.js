@@ -49,6 +49,7 @@ router.post('/bulk', protect, authorize('admin'), importRateLimiter, userControl
 router.get('/import-template', protect, authorize('admin', 'course_instructor'), userController.downloadImportTemplate);
 router.post('/import-csv', protect, authorize('admin', 'course_instructor'), importRateLimiter, upload.single('file'), userController.importUsersCSV);
 router.get('/', protect, authorize('admin', 'course_instructor'), courseAccountController.getAccounts);
+router.patch('/bulk-update', protect, authorize('admin', 'course_instructor'), userController.bulkUpdateUsers);
 router.get('/:id', protect, authorize('admin', 'course_instructor'), userController.getUserById);
 router.put('/:id', protect, authorize('admin', 'course_instructor'), userController.updateUser);
 router.delete(

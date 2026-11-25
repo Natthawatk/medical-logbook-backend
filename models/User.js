@@ -67,8 +67,18 @@ const userSchema = new Schema(
     },
     academic_status: {
       type: String,
-      enum: ['active', 'graduated', 'inactive'],
+      enum: ['active', 'inactive'],
       default: 'active',
+    },
+    is_shared_account: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    shared_location_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'Location',
+      default: null,
     },
     enrolled_courses: [
       {
@@ -91,11 +101,27 @@ const userSchema = new Schema(
       default: 0,
       select: false,
     },
+    must_change_password: {
+      type: Boolean,
+      default: false,
+    },
+    notification_preferences: {
+      push_categories: {
+        cases: { type: Boolean, default: true },
+        shifts: { type: Boolean, default: true },
+        course_updates: { type: Boolean, default: true },
+        admin_ops: { type: Boolean, default: true },
+        security: { type: Boolean, default: true },
+      },
+    },
   },
   {
     timestamps: true,
   }
 );
+
+userSchema.index({ role: 1, academic_status: 1 });
+userSchema.index({ role: 1, enrolled_courses: 1 });
 
 // Hash password before save if modified
 userSchema.pre('save', async function (next) {

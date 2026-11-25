@@ -15,6 +15,8 @@ router.get('/instructor', authorize('course_instructor'), instructorDashboardCon
 router.get('/instructor/course-skills/:course_id', authorize('course_instructor'), instructorDashboardController.getCourseSkillsStats);
 router.get('/admin', authorize('admin'), dashboardController.getAdminStats);
 router.get('/admin/student-progress', authorize('admin', 'course_instructor'), dashboardController.getStudentProgress);
+router.get('/admin/preceptor-progress', authorize('admin', 'course_instructor'), dashboardController.getPreceptorProgress);
+router.get('/admin/preceptor/:id', authorize('admin', 'course_instructor'), dashboardController.getAdminPreceptorStats);
 router.get('/admin/export-yearly', authorize('admin', 'course_instructor'), dashboardController.exportYearlyProgressExcel);
 router.get('/admin/student/:id', authorize('admin', 'course_instructor'), dashboardController.getAdminStudentStats);
 router.get('/admin/student/:id/export', authorize('admin', 'course_instructor'), dashboardController.exportStudentDetailExcel);

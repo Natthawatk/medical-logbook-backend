@@ -106,7 +106,7 @@ const procedureSchema = new Schema(
     },
     target_score: {
       type: Number,
-      required: true,
+      default: 0,
     },
     required_cases: {
       type: Number,
@@ -121,6 +121,8 @@ const procedureSchema = new Schema(
     timestamps: true,
   }
 );
+
+procedureSchema.index({ course_id: 1, createdAt: -1 });
 
 procedureSchema.statics.normalizeFormStructure = normalizeFormStructure;
 procedureSchema.statics.validateFormStructure = validateFormStructure;

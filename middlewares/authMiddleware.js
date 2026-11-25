@@ -2,6 +2,53 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { JWT_SECRET } = require('../config/environment');
 
+const AUTH_CACHE_TTL_MS = 30 * 1000;
+const AUTH_CACHE_MAX_ENTRIES = 2000;
+const authUserCache = new Map();
+
+const invalidateAuthUserCache = (userId) => {
+  if (!userId) return;
+  authUserCache.delete(String(userId));
+};
+
+const invalidateAuthUsersCache = (userIds) => {
+  if (!Array.isArray(userIds)) return;
+  userIds.forEach((id) => {
+    if (id) authUserCache.delete(String(id));
+  });
+};
+
+const getCachedAuthUser = async (userId) => {
+  const key = String(userId || '');
+  if (!key) return null;
+
+  const now = Date.now();
+  const cached = authUserCache.get(key);
+  if (cached && cached.expiresAt > now) {
+    return cached.user;
+  }
+  if (cached) {
+    authUserCache.delete(key);
+  }
+
+  const user = await User.findById(key)
+    .select('role email academic_status token_version')
+    .lean();
+
+  if (!user) return null;
+
+  if (authUserCache.size >= AUTH_CACHE_MAX_ENTRIES) {
+    const oldestKey = authUserCache.keys().next().value;
+    if (oldestKey) authUserCache.delete(oldestKey);
+  }
+
+  authUserCache.set(key, {
+    user,
+    expiresAt: now + AUTH_CACHE_TTL_MS,
+  });
+  return user;
+};
+
 // Protect routes - require valid JWT
 exports.protect = async (req, res, next) => {
   try {
@@ -33,7 +80,7 @@ exports.protect = async (req, res, next) => {
       });
     }
 
-    const user = await User.findById(decoded.id).select('+token_version');
+    const user = await getCachedAuthUser(decoded.id);
 
     if (!user) {
       return res.status(401).json({
@@ -66,6 +113,7 @@ exports.protect = async (req, res, next) => {
       email: user.email,
       academic_status: user.academic_status,
     };
+    req.authRemember = decoded.rem !== false;
 
     return next();
   } catch (err) {
@@ -93,3 +141,6 @@ exports.authorize = (...roles) => {
     return next();
   };
 };
+
+exports.invalidateAuthUserCache = invalidateAuthUserCache;
+exports.invalidateAuthUsersCache = invalidateAuthUsersCache;

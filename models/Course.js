@@ -57,5 +57,9 @@ const courseSchema = new Schema(
   }
 );
 
+courseSchema.index({ enrolled_students: 1 });
+courseSchema.index({ is_archived: 1, year: -1, semester: -1, course_code: 1 });
+courseSchema.index({ course_code: 1, semester: 1, year: 1 });
+
 module.exports = mongoose.model('Course', courseSchema);
 
